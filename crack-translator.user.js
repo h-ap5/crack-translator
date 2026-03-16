@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  가장 뛰어난 제미나이 마법들을 골라 화면 중앙에서 우아하게 번역을 확인하고 복사하는 도구랍니다.
+// @version      2.5
+// @description  웹에서 즉석으로 번역을 확인하고 복사하는 확장 프로그램 입니다
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -29,57 +29,59 @@
 
 [출력 및 시스템 규칙]
 - 원문의 형태(줄바꿈, 별표*, 따옴표" " 등) 및 텍스트 기호 구조를 원형대로 유지하십시오.
-- 번역 외의 부연 설명, 인사말, 감상 등은 절대 출력하지 마십시오. 오직 결과물만 제공하십시오.
-- 사용자가 복사하기 쉽도록 모든 결과물은 반드시 마크다운 기호 안에 담아 출력하십시오.`;
+- 번역 외의 부연 설명, 인사말, 감상 등은 절대 출력하지 마십시오. 오직 결과물만 제공하십시오. `;
 
-    // 2. 화면 꾸미기 (단추, 설정창, 중앙 안내창, 결과창)
+    // 2. 화면 꾸미기
     GM_addStyle(`
         #trans-setting-btn {
             position: fixed; bottom: 20px; right: 20px; z-index: 999999;
             background-color: #FF4432; color: white; border: none; border-radius: 50%;
-            width: 48px; height: 48px; font-size: 24px; cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.3s; display: flex; align-items: center; justify-content: center;
+            width: 48px; height: 48px; font-size: 24px; cursor: move; /* 움직일 수 있다는 표시 */
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2); transition: background-color 0.3s; 
+            display: flex; align-items: center; justify-content: center;
+            touch-action: none; /* 모바일에서 드래그 시 화면 멈춤 방지 */
         }
-        #trans-setting-btn:hover { background-color: #e03c2a; transform: scale(1.05); }
-
+        #trans-setting-btn:hover { background-color: #e03c2a; }
+        
+        /* 설정창도 이제 화면 정중앙에 우아하게 뜹니다 */
         #trans-setting-panel {
-            position: fixed; bottom: 80px; right: 20px; z-index: 999999;
-            background-color: #F7F7F5; border: 1px solid #C7C5BD; border-radius: 8px;
-            padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: none; width: 300px;
-            max-width: 85vw;
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 9999999; background-color: #F7F7F5; border: 1px solid #C7C5BD; 
+            border-radius: 12px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); 
+            display: none; width: 300px; max-width: 85vw;
         }
-        #trans-setting-panel h4 { margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 15px; }
+        #trans-setting-panel h4 { margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 16px; text-align: center; }
         .trans-label { font-size: 13px; color: #61605A; margin-bottom: 4px; display: block; font-family: sans-serif; font-weight: bold; }
         #trans-api-key, #trans-model-select, #trans-mode-select, #trans-custom-prompt {
             width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 12px;
             border: 1px solid #C7C5BD; border-radius: 4px; font-size: 13px; font-family: sans-serif;
         }
         #trans-custom-prompt { resize: vertical; }
-        .trans-btn-group { display: flex; gap: 8px; }
+        .trans-btn-group { display: flex; gap: 8px; margin-top: 8px; }
         #trans-reset-btn {
             flex: 1; background-color: #61605A; color: white; border: none;
-            padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px;
+            padding: 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
         }
         #trans-reset-btn:hover { background-color: #42413D; }
         #trans-save-btn {
             flex: 2; background-color: #FF4432; color: white; border: none;
-            padding: 8px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px;
+            padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px;
         }
         #trans-save-btn:hover { background-color: #e03c2a; }
-
+        
         /* ✨ 화면 정중앙에 뜨는 번역 대기창 */
         .trans-tooltip {
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             background-color: white; border: 1px solid #C7C5BD; border-radius: 12px;
-            padding: 16px 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); z-index: 999999;
-            width: max-content; max-width: 85vw; color: #1A1918; font-size: 15px;
+            padding: 16px 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); z-index: 999999; 
+            width: max-content; max-width: 85vw; color: #1A1918; font-size: 14px;
             line-height: 1.6; font-family: sans-serif; white-space: pre-wrap; text-align: center;
         }
-        /* ✨ 크고 누르기 편해진 번역 단추 */
+        /* ✨ 다시 앙증맞아진 번역 단추 */
         .trans-action-btn {
-            background-color: #FF4432; color: white; border: none; padding: 12px 24px;
-            border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.15); width: 100%;
+            background-color: #FF4432; color: white; border: none; padding: 8px 16px;
+            border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-top: 8px;
         }
         .trans-action-btn:hover { background-color: #e03c2a; }
 
@@ -117,13 +119,23 @@
     const btn = document.createElement('button');
     btn.id = 'trans-setting-btn';
     btn.innerHTML = '⚙️';
+    
+    // 이전에 옮겨둔 위치가 있다면 기억해 냅니다
+    const savedLeft = GM_getValue('btnPosX', '');
+    const savedTop = GM_getValue('btnPosY', '');
+    if (savedLeft && savedTop) {
+        btn.style.left = savedLeft;
+        btn.style.top = savedTop;
+        btn.style.bottom = 'auto';
+        btn.style.right = 'auto';
+    }
     document.body.appendChild(btn);
 
     const panel = document.createElement('div');
     panel.id = 'trans-setting-panel';
     panel.innerHTML = `
         <h4>초월 번역 설정</h4>
-
+        
         <span class="trans-label">제미나이 마법 선택:</span>
         <select id="trans-model-select">
             <option value="gemini-3.1-pro-preview">제미나이 3.1 프로 프리뷰 (최상급/권장)</option>
@@ -132,8 +144,8 @@
         </select>
 
         <span class="trans-label">API 키:</span>
-        <input type="text" id="trans-api-key" placeholder="API키를 입력해주세요">
-
+        <input type="text" id="trans-api-key" placeholder="AIza... 로 시작하는 열쇠를 넣어주세요">
+        
         <span class="trans-label">번역 방식:</span>
         <select id="trans-mode-select">
             <option value="ko">한글 전용 (기본)</option>
@@ -181,10 +193,6 @@
     modeSelect.value = GM_getValue('transMode', 'ko');
     customPromptInput.value = GM_getValue('customPrompt', baseSystemPrompt);
 
-    btn.addEventListener('click', () => {
-        panel.style.display = panel.style.display === 'none' || panel.style.display === '' ? 'block' : 'none';
-    });
-
     resetBtn.addEventListener('click', () => {
         if(confirm("지침서를 제가 처음 드린 기본 상태로 되돌리시겠어요?")) {
             customPromptInput.value = baseSystemPrompt;
@@ -196,18 +204,20 @@
         GM_setValue('apiModel', modelSelect.value);
         GM_setValue('transMode', modeSelect.value);
         GM_setValue('customPrompt', customPromptInput.value);
-
+        
         saveBtn.innerText = '저장 완료!';
         setTimeout(() => {
             saveBtn.innerText = '저장하기';
             panel.style.display = 'none';
+            overlay.style.display = 'none'; // 설정창 뒤의 어두운 배경도 치워줍니다
         }, 1000);
     });
 
     const closeResultModal = () => {
         overlay.style.display = 'none';
         resultModal.style.display = 'none';
-        copyModalBtn.innerText = '복사하기';
+        panel.style.display = 'none';
+        copyModalBtn.innerText = '복사하기'; 
     };
     closeModalBtn.addEventListener('click', closeResultModal);
     overlay.addEventListener('click', closeResultModal);
@@ -221,6 +231,88 @@
         }).catch(() => {
             copyModalBtn.innerText = '복사 실패 ❌';
         });
+    });
+
+    // ✨ 단추를 이리저리 끌고 다니는 드래그 마법
+    let isDragging = false;
+    let dragMoved = false;
+    let startX, startY, initialLeft, initialTop;
+
+    function startDrag(e) {
+        if (e.type === 'mousedown' && e.button !== 0) return; // 왼쪽 클릭만 허용
+        isDragging = true;
+        dragMoved = false;
+        
+        const clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+        const clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        
+        startX = clientX;
+        startY = clientY;
+        
+        const rect = btn.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+        
+        btn.style.bottom = 'auto';
+        btn.style.right = 'auto';
+    }
+
+    function moveDrag(e) {
+        if (!isDragging) return;
+        
+        const clientX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
+        const clientY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
+        
+        const dx = clientX - startX;
+        const dy = clientY - startY;
+        
+        // 살짝만 움직여도 드래그로 판정합니다
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+            dragMoved = true;
+        }
+        
+        if (dragMoved) {
+            e.preventDefault(); // 휴대전화에서 화면이 같이 구르는 것을 막습니다
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+            
+            // 단추가 화면 밖으로 도망가지 못하게 울타리를 칩니다
+            const maxX = window.innerWidth - btn.offsetWidth;
+            const maxY = window.innerHeight - btn.offsetHeight;
+            
+            btn.style.left = Math.max(0, Math.min(newLeft, maxX)) + 'px';
+            btn.style.top = Math.max(0, Math.min(newTop, maxY)) + 'px';
+        }
+    }
+
+    function stopDrag(e) {
+        if (!isDragging) return;
+        isDragging = false;
+        
+        if (dragMoved) {
+            // 위치를 기억해 둡니다
+            GM_setValue('btnPosX', btn.style.left);
+            GM_setValue('btnPosY', btn.style.top);
+        }
+    }
+
+    btn.addEventListener('mousedown', startDrag);
+    document.addEventListener('mousemove', moveDrag, { passive: false });
+    document.addEventListener('mouseup', stopDrag);
+
+    btn.addEventListener('touchstart', startDrag, { passive: false });
+    document.addEventListener('touchmove', moveDrag, { passive: false });
+    document.addEventListener('touchend', stopDrag);
+
+    // 단추를 '클릭'했을 때만 설정창이 열리도록 합니다 (드래그와 구분)
+    btn.addEventListener('click', (e) => {
+        if (dragMoved) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        panel.style.display = panel.style.display === 'none' || panel.style.display === '' ? 'block' : 'none';
+        overlay.style.display = panel.style.display === 'block' ? 'block' : 'none'; // 배경을 우아하게 어둡게
     });
 
     let tooltip = null;
@@ -241,30 +333,30 @@
 
             tooltip = document.createElement('div');
             tooltip.className = 'trans-tooltip';
-
+            
             const actionBtn = document.createElement('button');
             actionBtn.className = 'trans-action-btn';
             actionBtn.innerText = '✨ 번역하기';
-
+            
             actionBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-
+                
                 const apiKey = GM_getValue('apiKey', '').trim();
                 if (!apiKey) {
-                    tooltip.innerHTML = "어머, 우측 하단의 톱니바퀴 단추를 눌러<br><b>API 키</b>를 먼저 꽂아주셔요.";
+                    tooltip.innerHTML = "설정 단추(⚙️)를 눌러 <b>API 키</b>를 먼저 꽂아주셔요.";
                     return;
                 }
 
-                tooltip.innerText = "선택하신 마법이 문장을 다시 쓰는 중이랍니다...\n잠시만 기다려 주시지요 ⏳";
+                tooltip.innerText = "마법이 문장을 다시 쓰는 중이랍니다... ⏳";
 
                 let currentModel = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
                 if (currentModel === 'gemini-3.0-flash' || currentModel === 'gemini-1.5-pro') {
                     currentModel = 'gemini-3.1-pro-preview';
                 }
-
+                
                 const currentMode = GM_getValue('transMode', 'ko');
                 let finalPrompt = GM_getValue('customPrompt', baseSystemPrompt);
-
+                
                 if (currentMode === 'en') {
                     finalPrompt += `\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.`;
                 }
@@ -272,9 +364,7 @@
                 GM_xmlhttpRequest({
                     method: "POST",
                     url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`,
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
+                    headers: { "Content-Type": "application/json" },
                     data: JSON.stringify({
                         system_instruction: { parts: [{ text: finalPrompt }] },
                         contents: [{ parts: [{ text: selectedText }] }],
@@ -295,7 +385,7 @@
 
                             tooltip.remove();
                             tooltip = null;
-
+                            
                             resultContent.innerText = resultText.replace(/```/g, '').trim();
                             overlay.style.display = 'block';
                             resultModal.style.display = 'flex';
@@ -310,6 +400,7 @@
                 });
             });
 
+            // 안내 창 텍스트 없이 앙증맞은 버튼만 딱 보여줍니다
             tooltip.appendChild(actionBtn);
             document.body.appendChild(tooltip);
         }, 100);
