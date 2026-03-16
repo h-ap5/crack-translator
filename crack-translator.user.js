@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  가장 뛰어난 제미나이 마법들을 골라 화면 중앙에서 우아하게 번역을 확인하고 복사하는 도구랍니다.
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
@@ -30,10 +30,9 @@
 [출력 및 시스템 규칙]
 - 원문의 형태(줄바꿈, 별표*, 따옴표" " 등) 및 텍스트 기호 구조를 원형대로 유지하십시오.
 - 번역 외의 부연 설명, 인사말, 감상 등은 절대 출력하지 마십시오. 오직 결과물만 제공하십시오.
-- 사용자가 복사하기 쉽도록 모든 결과물은 반드시 마크다운 기호 안에 담아 출력하십시오.
-- 그림 생성 태그를 요청할 시, 캐릭터 외형 태그는 제외하고 나머지 태그만 마크다운 기호에 오로지 태그만 넣으십시오. 여러 개념이면 '또는(or)'을 쓰지 말고 따로따로 제공하며, 가중치 형식은 숫자::태그:: 형식으로 제공하십시오.`;
+- 사용자가 복사하기 쉽도록 모든 결과물은 반드시 마크다운 기호 안에 담아 출력하십시오.`;
 
-    // 2. 화면 꾸미기
+    // 2. 화면 꾸미기 (단추, 설정창, 중앙 안내창, 결과창)
     GM_addStyle(`
         #trans-setting-btn {
             position: fixed; bottom: 20px; right: 20px; z-index: 999999;
@@ -47,6 +46,7 @@
             position: fixed; bottom: 80px; right: 20px; z-index: 999999;
             background-color: #F7F7F5; border: 1px solid #C7C5BD; border-radius: 8px;
             padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: none; width: 300px;
+            max-width: 85vw;
         }
         #trans-setting-panel h4 { margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 15px; }
         .trans-label { font-size: 13px; color: #61605A; margin-bottom: 4px; display: block; font-family: sans-serif; font-weight: bold; }
@@ -67,19 +67,23 @@
         }
         #trans-save-btn:hover { background-color: #e03c2a; }
 
+        /* ✨ 화면 정중앙에 뜨는 번역 대기창 */
         .trans-tooltip {
-            position: absolute; background-color: white; border: 1px solid #C7C5BD;
-            border-radius: 8px; padding: 12px 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 999999; max-width: 450px; color: #1A1918; font-size: 14px;
-            line-height: 1.6; font-family: sans-serif; white-space: pre-wrap;
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background-color: white; border: 1px solid #C7C5BD; border-radius: 12px;
+            padding: 16px 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); z-index: 999999;
+            width: max-content; max-width: 85vw; color: #1A1918; font-size: 15px;
+            line-height: 1.6; font-family: sans-serif; white-space: pre-wrap; text-align: center;
         }
+        /* ✨ 크고 누르기 편해진 번역 단추 */
         .trans-action-btn {
-            background-color: #FF4432; color: white; border: none; padding: 8px 16px;
-            border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            background-color: #FF4432; color: white; border: none; padding: 12px 24px;
+            border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.15); width: 100%;
         }
         .trans-action-btn:hover { background-color: #e03c2a; }
 
+        /* 화면 중앙에 뜨는 우아한 결과창 */
         #trans-result-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background-color: rgba(0, 0, 0, 0.4); z-index: 9999998; display: none;
@@ -88,7 +92,7 @@
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             background-color: #FFFFFF; border-radius: 12px; padding: 24px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.2); z-index: 9999999;
-            width: 80%; max-width: 600px; display: none; flex-direction: column; gap: 16px;
+            width: 85%; max-width: 600px; display: none; flex-direction: column; gap: 16px;
         }
         #trans-result-modal h3 { margin: 0; color: #1A1918; font-family: sans-serif; font-size: 18px; }
         #trans-result-content {
@@ -109,7 +113,7 @@
         .trans-copy-btn:hover { background-color: #e03c2a; }
     `);
 
-    // 3. 설정 보관함과 결과창 뼈대 만들기
+    // 3. 뼈대 만들기
     const btn = document.createElement('button');
     btn.id = 'trans-setting-btn';
     btn.innerHTML = '⚙️';
@@ -128,7 +132,7 @@
         </select>
 
         <span class="trans-label">API 키:</span>
-        <input type="text" id="trans-api-key" placeholder="AIza... 로 시작하는 열쇠를 넣어주세요">
+        <input type="text" id="trans-api-key" placeholder="API키를 입력해주세요">
 
         <span class="trans-label">번역 방식:</span>
         <select id="trans-mode-select">
@@ -221,102 +225,106 @@
 
     let tooltip = null;
 
-    document.addEventListener('mouseup', (event) => {
+    const handleTextSelection = (event) => {
         if (panel.contains(event.target) || btn.contains(event.target) || resultModal.contains(event.target)) return;
         if (tooltip && tooltip.contains(event.target)) return;
 
-        const selectedText = window.getSelection().toString().trim();
+        setTimeout(() => {
+            const selectedText = window.getSelection().toString().trim();
 
-        if (!selectedText) {
-            if (tooltip) { tooltip.remove(); tooltip = null; }
-            return;
-        }
-
-        if (tooltip) tooltip.remove();
-
-        tooltip = document.createElement('div');
-        tooltip.className = 'trans-tooltip';
-        tooltip.style.left = `${event.pageX}px`;
-        tooltip.style.top = `${event.pageY + 20}px`;
-
-        const actionBtn = document.createElement('button');
-        actionBtn.className = 'trans-action-btn';
-        actionBtn.innerText = '✨ 번역하기';
-
-        actionBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-
-            const apiKey = GM_getValue('apiKey', '').trim();
-            if (!apiKey) {
-                tooltip.innerHTML = "어머, 우측 하단의 톱니바퀴 단추를 눌러 <b>API 키</b>를 먼저 꽂아주셔요.";
+            if (!selectedText) {
+                if (tooltip) { tooltip.remove(); tooltip = null; }
                 return;
             }
 
-            tooltip.innerText = "선택하신 마법이 문장을 다시 쓰는 중이랍니다... 잠시만 기다려 주시지요 ⏳";
+            if (tooltip) tooltip.remove();
 
-            // 이제 세 가지 마법 중 하나를 자유롭게 고를 수 있답니다
-            let currentModel = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
-            // 예전 이름표가 남아있다면 최상급 마법으로 바로잡아 줍니다
-            if (currentModel === 'gemini-3.0-flash' || currentModel === 'gemini-1.5-pro') {
-                currentModel = 'gemini-3.1-pro-preview';
-            }
+            tooltip = document.createElement('div');
+            tooltip.className = 'trans-tooltip';
 
-            const currentMode = GM_getValue('transMode', 'ko');
-            let finalPrompt = GM_getValue('customPrompt', baseSystemPrompt);
+            const actionBtn = document.createElement('button');
+            actionBtn.className = 'trans-action-btn';
+            actionBtn.innerText = '✨ 번역하기';
 
-            if (currentMode === 'en') {
-                finalPrompt += `\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.`;
-            }
+            actionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
 
-            GM_xmlhttpRequest({
-                method: "POST",
-                url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`,
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                data: JSON.stringify({
-                    system_instruction: { parts: [{ text: finalPrompt }] },
-                    contents: [{ parts: [{ text: selectedText }] }],
-                    generationConfig: { temperature: 0.7 }
-                }),
-                onload: function(response) {
-                    try {
-                        const data = JSON.parse(response.responseText);
-                        let resultText = "";
-
-                        if (data.candidates && data.candidates.length > 0) {
-                            resultText = data.candidates[0].content.parts[0].text;
-                        } else if (data.error) {
-                            resultText = `어머, 마법이 실패했군요. (사유: ${data.error.message})`;
-                        } else {
-                            resultText = "마법이 빗나갔군요. API 키와 모델을 다시 확인해 보셔요.";
-                        }
-
-                        tooltip.remove();
-                        tooltip = null;
-
-                        resultContent.innerText = resultText.replace(/```/g, '').trim();
-                        overlay.style.display = 'block';
-                        resultModal.style.display = 'flex';
-
-                    } catch (err) {
-                        tooltip.innerText = "결과를 읽어 들이는 중에 엉킴이 발생했답니다.";
-                    }
-                },
-                onerror: function(error) {
-                    tooltip.innerText = "통신에 문제가 생겼답니다. 연결 상태를 확인해 주시지요.";
+                const apiKey = GM_getValue('apiKey', '').trim();
+                if (!apiKey) {
+                    tooltip.innerHTML = "어머, 우측 하단의 톱니바퀴 단추를 눌러<br><b>API 키</b>를 먼저 꽂아주셔요.";
+                    return;
                 }
+
+                tooltip.innerText = "선택하신 마법이 문장을 다시 쓰는 중이랍니다...\n잠시만 기다려 주시지요 ⏳";
+
+                let currentModel = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
+                if (currentModel === 'gemini-3.0-flash' || currentModel === 'gemini-1.5-pro') {
+                    currentModel = 'gemini-3.1-pro-preview';
+                }
+
+                const currentMode = GM_getValue('transMode', 'ko');
+                let finalPrompt = GM_getValue('customPrompt', baseSystemPrompt);
+
+                if (currentMode === 'en') {
+                    finalPrompt += `\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.`;
+                }
+
+                GM_xmlhttpRequest({
+                    method: "POST",
+                    url: `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`,
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    data: JSON.stringify({
+                        system_instruction: { parts: [{ text: finalPrompt }] },
+                        contents: [{ parts: [{ text: selectedText }] }],
+                        generationConfig: { temperature: 0.7 }
+                    }),
+                    onload: function(response) {
+                        try {
+                            const data = JSON.parse(response.responseText);
+                            let resultText = "";
+
+                            if (data.candidates && data.candidates.length > 0) {
+                                resultText = data.candidates[0].content.parts[0].text;
+                            } else if (data.error) {
+                                resultText = `어머, 마법이 실패했군요.\n(사유: ${data.error.message})`;
+                            } else {
+                                resultText = "마법이 빗나갔군요. API 키와 모델을 다시 확인해 보셔요.";
+                            }
+
+                            tooltip.remove();
+                            tooltip = null;
+
+                            resultContent.innerText = resultText.replace(/```/g, '').trim();
+                            overlay.style.display = 'block';
+                            resultModal.style.display = 'flex';
+
+                        } catch (err) {
+                            tooltip.innerText = "결과를 읽어 들이는 중에 엉킴이 발생했답니다.";
+                        }
+                    },
+                    onerror: function(error) {
+                        tooltip.innerText = "통신에 문제가 생겼답니다. 연결 상태를 확인해 주시지요.";
+                    }
+                });
             });
-        });
 
-        tooltip.appendChild(actionBtn);
-        document.body.appendChild(tooltip);
-    });
+            tooltip.appendChild(actionBtn);
+            document.body.appendChild(tooltip);
+        }, 100);
+    };
 
-    document.addEventListener('mousedown', (event) => {
+    document.addEventListener('mouseup', handleTextSelection);
+    document.addEventListener('touchend', handleTextSelection);
+
+    const closeTooltip = (event) => {
         if (tooltip && !tooltip.contains(event.target) && window.getSelection().toString().trim() === '') {
             tooltip.remove();
             tooltip = null;
         }
-    });
+    };
+
+    document.addEventListener('mousedown', closeTooltip);
+    document.addEventListener('touchstart', closeTooltip);
 })();
