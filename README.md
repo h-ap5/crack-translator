@@ -10,6 +10,7 @@ https://github.com/h-ap5/crack-translator/raw/refs/heads/main/crack-translator.u
 - 결과창을 직접 수정할 수 있게 변경했습니다.
 - 2.5Pro 모델을 추가했습니다.
 - Firebase Vertex AI API가 호환 가능하게 변경했습니다.
+  ※주의: Firebase Vertex AI API 사용시 Gemini 2.5 Pro 모델만 호환이 가능합니다.
 - 자동 저장 기능 & 드래그 부분 교체 연동: 번역 누르기 전에 설정값이 자동 저장되게 했고, 드래그로 일부분만 번역할 때도 팝업창에서 수정한 뒤 원문의 딱 그 부분만 갈아끼워지도록 연동했습니다.
 
 ### v2.6
