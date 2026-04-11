@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  최신 AI 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원.
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
@@ -47,7 +47,6 @@
     //  스타일
     // =============================================
     GM_addStyle(`
-        /* ── 설정 버튼 ── */
         #trans-setting-btn {
             position: fixed; z-index: 999999;
             background-color: #FF4432; color: white; border: none; border-radius: 50%;
@@ -57,36 +56,22 @@
         }
         #trans-setting-btn:hover { background-color: #e03c2a; }
 
-        /* ── 설정 패널 ── */
         #trans-setting-panel {
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             z-index: 9999999; background-color: #F7F7F5; border: 1px solid #C7C5BD; border-radius: 8px;
             padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: none; width: 320px;
             max-width: 85vw;
         }
-        #trans-setting-panel h4 {
-            margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 16px; text-align: center;
+        #trans-setting-panel h4 { margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 16px; text-align: center; }
+        .trans-label { font-size: 13px; color: #61605A; margin-bottom: 4px; display: block; font-family: sans-serif; font-weight: bold; }
+        #trans-api-provider, #trans-api-key, #trans-firebase-script, #trans-model-select, #trans-mode-select, #trans-custom-prompt {
+            width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 12px; border: 1px solid #C7C5BD; border-radius: 4px; font-size: 13px; font-family: sans-serif;
         }
-        .trans-label {
-            font-size: 13px; color: #61605A; margin-bottom: 4px; display: block;
-            font-family: sans-serif; font-weight: bold;
-        }
-        #trans-api-key, #trans-model-select, #trans-mode-select, #trans-custom-prompt {
-            width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 12px;
-            border: 1px solid #C7C5BD; border-radius: 4px; font-size: 13px; font-family: sans-serif;
-        }
-        #trans-custom-prompt { resize: vertical; }
-        .trans-toggle-label {
-            display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1A1918;
-            font-family: sans-serif; font-weight: bold; margin-bottom: 12px; cursor: pointer;
-        }
+        #trans-custom-prompt, #trans-firebase-script { resize: vertical; }
+        .trans-toggle-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1A1918; font-family: sans-serif; font-weight: bold; margin-bottom: 12px; cursor: pointer; }
 
-        /* ── 버튼 그룹 ── */
         .trans-btn-group { display: flex; gap: 6px; margin-bottom: 10px; }
-        .trans-panel-btn {
-            flex: 1; padding: 10px 6px; border-radius: 6px; cursor: pointer; border: none;
-            font-size: 13px; font-weight: bold; color: white; white-space: nowrap;
-        }
+        .trans-panel-btn { flex: 1; padding: 10px 6px; border-radius: 6px; cursor: pointer; border: none; font-size: 13px; font-weight: bold; color: white; white-space: nowrap; }
         #trans-reset-btn { background-color: #61605A; }
         #trans-reset-btn:hover { background-color: #42413D; }
         #trans-save-btn { background-color: #FF4432; }
@@ -95,29 +80,14 @@
         #trans-translate-btn:hover { background-color: #5228CC; }
         #trans-translate-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
-        /* ── 진행 상태 표시줄 ── */
-        #trans-status-box {
-            margin-top: 10px; padding: 8px 10px; border-radius: 4px;
-            background-color: #EEEEEE; border: 1px solid #E5E5E1;
-            font-size: 12px; font-family: sans-serif; color: #61605A;
-            line-height: 1.5; min-height: 32px; display: none; word-break: break-word; text-align: center;
-        }
+        #trans-status-box { margin-top: 10px; padding: 8px 10px; border-radius: 4px; background-color: #EEEEEE; border: 1px solid #E5E5E1; font-size: 12px; font-family: sans-serif; color: #61605A; line-height: 1.5; min-height: 32px; display: none; word-break: break-word; text-align: center; }
         #trans-status-box.active { display: block; }
         #trans-status-box.ok   { color: #1a7a3a; background: #f0faf3; border-color: #a8d5b5; }
         #trans-status-box.err  { color: #b91c1c; background: #fff0f0; border-color: #f5a0a0; }
         #trans-status-box.info { color: #4A4A8A; background: #f3f0ff; border-color: #c4b8f5; }
 
-        /* ── 모달 및 오버레이 ── */
-        #trans-result-overlay {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background-color: rgba(0, 0, 0, 0.4); z-index: 9999998; display: none;
-        }
-        #trans-result-modal {
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            background-color: #FFFFFF; border-radius: 12px; padding: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2); z-index: 9999999;
-            width: 85%; max-width: 600px; display: none; flex-direction: column; gap: 12px;
-        }
+        #trans-result-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(0, 0, 0, 0.4); z-index: 9999998; display: none; }
+        #trans-result-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #FFFFFF; border-radius: 12px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); z-index: 9999999; width: 85%; max-width: 600px; display: none; flex-direction: column; gap: 12px; }
         .trans-modal-header { display: flex; justify-content: space-between; align-items: center; }
         .trans-modal-header h3 { margin: 0; color: #1A1918; font-family: sans-serif; font-size: 18px; }
         .trans-reroll-group { display: flex; gap: 6px; }
@@ -127,10 +97,12 @@
         #trans-reroll-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
         #trans-result-content {
-            background-color: #F7F7F5; padding: 16px; border-radius: 8px;
-            font-size: 14px; line-height: 1.6; color: #1A1918; border: 1px solid #E5E5E1;
-            max-height: 40vh; overflow-y: auto; white-space: pre-wrap; font-family: sans-serif;
+            background-color: #F7F7F5; padding: 16px; border-radius: 8px; font-size: 14px;
+            line-height: 1.6; color: #1A1918; border: 1px solid #E5E5E1; height: 40vh;
+            width: 100%; box-sizing: border-box; resize: vertical; outline: none;
+            font-family: sans-serif; white-space: pre-wrap;
         }
+        #trans-result-content:focus { border-color: #6A3DE8; }
 
         .trans-modal-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
         .trans-history-nav { display: flex; align-items: center; gap: 8px; }
@@ -138,21 +110,13 @@
         .trans-nav-btn:hover { background: #D4D4D0; }
         .trans-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
         #trans-history-count { font-size: 13px; font-family: sans-serif; font-weight: bold; color: #61605A; }
-
         .trans-modal-btns { display: flex; gap: 8px; flex-wrap: wrap; }
         .trans-modal-btn { padding: 8px 14px; border-radius: 6px; cursor: pointer; border: none; font-weight: bold; font-size: 14px; color: white; }
         .trans-close-btn { background-color: #E5E5E1; color: #1A1918; }
         .trans-close-btn:hover { background-color: #D4D4D0; }
         .trans-patch-btn { background-color: #6A3DE8; }
         .trans-patch-btn:hover { background-color: #5228CC; }
-
-        /* ── 토스트 ── */
-        #trans-toast {
-            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-            background: rgba(30,30,30,0.92); color: #fff; padding: 10px 20px;
-            border-radius: 20px; font-size: 13px; font-family: sans-serif;
-            z-index: 9999999; pointer-events: none; opacity: 0; transition: opacity 0.3s;
-        }
+        #trans-toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: rgba(30,30,30,0.92); color: #fff; padding: 10px 20px; border-radius: 20px; font-size: 13px; font-family: sans-serif; z-index: 9999999; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
         #trans-toast.show { opacity: 1; }
     `);
 
@@ -169,15 +133,23 @@
     panel.innerHTML = `
         <h4>초월 번역 설정</h4>
 
+        <span class="trans-label">API 제공자:</span>
+        <select id="trans-api-provider">
+            <option value="google">Google (기본 API)</option>
+            <option value="firebase">Firebase (Vertex API)</option>
+        </select>
+
+        <span class="trans-label" id="trans-key-label">열쇠 고리 (API 키):</span>
+        <input type="password" id="trans-api-key" placeholder="API 키를 입력해주세요">
+        <textarea id="trans-firebase-script" rows="6" placeholder="파이어베이스에서 복사한 코드 전체를 여기에 그대로 붙여넣어 주세요!" style="display:none; font-family: monospace;"></textarea>
+
         <span class="trans-label">제미나이 모델 선택:</span>
         <select id="trans-model-select">
             <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (최상급)</option>
             <option value="gemini-3-flash-preview">Gemini 3 Flash Preview (다목적)</option>
+            <option value="gemini-2.5-pro">Gemini 2.5 Pro (안정/고성능)</option>
             <option value="gemini-2.5-flash">Gemini 2.5 Flash (빠름)</option>
         </select>
-
-        <span class="trans-label">API 키:</span>
-        <input type="text" id="trans-api-key" placeholder="API 키를 입력해주세요">
 
         <span class="trans-label">번역 방식:</span>
         <select id="trans-mode-select">
@@ -215,12 +187,13 @@
                 <select id="trans-modal-model">
                     <option value="gemini-3.1-pro-preview">3.1 Pro</option>
                     <option value="gemini-3-flash-preview">3 Flash</option>
+                    <option value="gemini-2.5-pro">2.5 Pro</option>
                     <option value="gemini-2.5-flash">2.5 Flash</option>
                 </select>
                 <button id="trans-reroll-btn">다시 돌리기</button>
             </div>
         </div>
-        <div id="trans-result-content"></div>
+        <textarea id="trans-result-content"></textarea>
         <div class="trans-modal-footer">
             <div class="trans-history-nav">
                 <button class="trans-nav-btn" id="trans-prev-btn">◀ 이전</button>
@@ -242,7 +215,10 @@
     // =============================================
     //  설정 요소 참조 및 초기값 로드
     // =============================================
+    const apiProviderSelect = document.getElementById('trans-api-provider');
     const apiKeyInput       = document.getElementById('trans-api-key');
+    const firebaseScriptInput = document.getElementById('trans-firebase-script');
+    const keyLabel          = document.getElementById('trans-key-label');
     const modelSelect       = document.getElementById('trans-model-select');
     const modeSelect        = document.getElementById('trans-mode-select');
     const previewToggle     = document.getElementById('trans-preview-toggle');
@@ -252,7 +228,6 @@
     const translateBtn      = document.getElementById('trans-translate-btn');
     const statusBox         = document.getElementById('trans-status-box');
 
-    // 모달 요소 참조
     const resultContent     = document.getElementById('trans-result-content');
     const closeModalBtn     = document.getElementById('trans-close-modal');
     const patchModalBtn     = document.getElementById('trans-patch-modal');
@@ -262,11 +237,41 @@
     const nextBtn           = document.getElementById('trans-next-btn');
     const historyCount      = document.getElementById('trans-history-count');
 
+    apiProviderSelect.value = GM_getValue('apiProvider', 'google');
     apiKeyInput.value       = GM_getValue('apiKey', '');
+    firebaseScriptInput.value = GM_getValue('firebaseScript', '');
     modelSelect.value       = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
     modeSelect.value        = GM_getValue('transMode', 'ko');
     previewToggle.checked   = GM_getValue('showPreview', true);
     customPromptInput.value = GM_getValue('customPrompt', baseSystemPrompt);
+
+    const toggleProviderUI = () => {
+        if (apiProviderSelect.value === 'firebase') {
+            apiKeyInput.style.display = 'none';
+            firebaseScriptInput.style.display = 'block';
+            keyLabel.innerText = 'Firebase Config 복붙창:';
+        } else {
+            apiKeyInput.style.display = 'block';
+            firebaseScriptInput.style.display = 'none';
+            keyLabel.innerText = '열쇠 고리 (API 키):';
+        }
+    };
+    apiProviderSelect.addEventListener('change', toggleProviderUI);
+    toggleProviderUI();
+
+    apiKeyInput.addEventListener('focus', () => { apiKeyInput.type = 'text'; });
+    apiKeyInput.addEventListener('blur', () => { apiKeyInput.type = 'password'; });
+
+    // 번역 시작 시 강제 저장 로직
+    const saveCurrentSettings = () => {
+        GM_setValue('apiProvider',  apiProviderSelect.value);
+        GM_setValue('apiKey',       apiKeyInput.value.trim());
+        GM_setValue('firebaseScript', firebaseScriptInput.value.trim());
+        GM_setValue('apiModel',     modelSelect.value);
+        GM_setValue('transMode',    modeSelect.value);
+        GM_setValue('showPreview',  previewToggle.checked);
+        GM_setValue('customPrompt', customPromptInput.value);
+    };
 
     // =============================================
     //  드래그 (화면 이탈 방지 로직 적용)
@@ -373,37 +378,154 @@
     }
     function isChattingPage() { return !!parsePath(); }
     function buildFinalPrompt() {
-        let p = GM_getValue('customPrompt', baseSystemPrompt);
-        if (GM_getValue('transMode', 'ko') === 'en')
+        let p = customPromptInput.value;
+        if (modeSelect.value === 'en')
             p += '\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.';
         return p;
     }
 
-    // =============================================
-    //  코드블럭 보존 (기존 방식 유지)
-    // =============================================
     function maskCodeBlocks(text) { return text.replace(CODE_BLOCK_RE, (_, inner) => FENCE_OPEN_SUB + inner + FENCE_CLOSE_SUB); }
     function unmaskCodeBlocks(text) { return text.split(FENCE_OPEN_SUB).join('```').split(FENCE_CLOSE_SUB).join('```'); }
-    function stripOuterFence(text) { return text.replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, '$1').trim(); }
+    function stripOuterFence(text) { return text.replace(/^\`\`\`[^\n]*\n([\s\S]*?)\n\`\`\`\s*$/m, '$1').trim(); }
 
     // =============================================
     //  API 통신
     // =============================================
-    function callGemini(text, overrideModel = null) {
-        return new Promise((resolve, reject) => {
-            const apiKey = GM_getValue('apiKey', '').trim();
-            if (!apiKey) { reject(new Error('API 키가 설정되지 않았습니다.')); return; }
+    function parseVertexContent(vertexAiScript) {
+        if (vertexAiScript.length <= 0) return undefined;
+        const startText = "firebaseConfig = {";
+        const startIndex = vertexAiScript.indexOf(startText);
+        if (startIndex === -1) return undefined;
 
-            let modelId = overrideModel || GM_getValue('apiModel', 'gemini-3.1-pro-preview');
-            const masked = maskCodeBlocks(text);
+        const endIndex = vertexAiScript.indexOf("}", startIndex + 1);
+        if (endIndex === -1) return undefined;
+
+        try {
+            const fetched = vertexAiScript
+                .substring(startIndex + startText.length - 1, endIndex + 1)
+                .replace(" ", "")
+                .replaceAll(/(\S*)\: /g, '"$1": ');
+            return JSON.parse(fetched);
+        } catch (e) {
+            return undefined;
+        }
+    }
+
+    function callGemini(text, overrideModel = null) {
+        return new Promise(async (resolve, reject) => {
+            const provider = apiProviderSelect.value;
+            let modelId = overrideModel || modelSelect.value;
+            let finalPrompt = buildFinalPrompt();
+            const maskedText = maskCodeBlocks(text);
+
+            if (provider === 'firebase') {
+                const configRaw = firebaseScriptInput.value.trim();
+                if (!configRaw) {
+                    reject(new Error('설정창에서 Firebase 복사본을 먼저 입력해주세요.'));
+                    return;
+                }
+
+                let configObj;
+                let fbVersion = '12.12.0';
+
+                try {
+                    const versionMatch = configRaw.match(/firebasejs\/([0-9.]+)\/firebase-app\.js/);
+                    if (versionMatch && versionMatch[1]) {
+                        fbVersion = versionMatch[1];
+                    }
+
+                    const match = configRaw.match(/const\s+firebaseConfig\s*=\s*({[\s\S]*?});/);
+                    if (match && match[1]) {
+                        configObj = new Function("return " + match[1])();
+                    } else {
+                        const fallbackMatch = configRaw.match(/({[\s\S]*?apiKey[\s\S]*?appId[\s\S]*?})/);
+                        if (fallbackMatch && fallbackMatch[1]) {
+                            configObj = new Function("return " + fallbackMatch[1])();
+                        } else {
+                            throw new Error("형식 오류");
+                        }
+                    }
+                } catch (e) {
+                    reject(new Error("Firebase 코드를 해독하지 못했습니다. 파이어베이스 홈페이지에서 준 <script> 태그 포함된 코드를 그대로 넣어주세요."));
+                    return;
+                }
+
+                try {
+                    const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
+                    const majorVersion = parseInt(fbVersion.split('.')[0]);
+
+                    const aiUrl = majorVersion >= 12
+                        ? `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-ai.js`
+                        : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
+
+                    const { initializeApp, getApps, getApp } = await import(appUrl);
+
+                    let ai;
+                    let generativeModel;
+
+                    if (majorVersion >= 12) {
+                        const { HarmBlockThreshold, HarmCategory, getAI, getGenerativeModel, VertexAIBackend } = await import(aiUrl);
+                        const apps = getApps();
+                        const app = apps.length === 0 ? initializeApp(configObj) : getApp();
+
+                        ai = getAI(app, { backend: new VertexAIBackend() });
+
+                        const safetySettings = [
+                            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF }
+                        ];
+
+                        generativeModel = getGenerativeModel(ai, {
+                            model: modelId,
+                            safetySettings,
+                            systemInstruction: { parts: [{ text: finalPrompt }] }
+                        });
+                    } else {
+                        const { HarmBlockThreshold, HarmCategory, getVertexAI, getGenerativeModel } = await import(aiUrl);
+                        const apps = getApps();
+                        const app = apps.length === 0 ? initializeApp(configObj) : getApp();
+
+                        ai = getVertexAI(app);
+
+                        const safetySettings = [
+                            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
+                            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF }
+                        ];
+
+                        generativeModel = getGenerativeModel(ai, {
+                            model: modelId,
+                            safetySettings,
+                            systemInstruction: { parts: [{ text: finalPrompt }] }
+                        });
+                    }
+
+                    const result = await generativeModel.generateContent(maskedText);
+                    const rawResult = result.response.text();
+
+                    const cleaned  = stripOuterFence(rawResult);
+                    const restored = unmaskCodeBlocks(cleaned);
+                    resolve(restored);
+                } catch (e) {
+                    reject(new Error('Firebase Vertex 통신 실패: ' + e.message));
+                }
+                return;
+            }
+
+            // 💡 기본 Google API 로직
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) { reject(new Error('API 키가 설정되지 않았습니다.')); return; }
 
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
                 headers: { 'Content-Type': 'application/json' },
                 data: JSON.stringify({
-                    system_instruction: { parts: [{ text: buildFinalPrompt() }] },
-                    contents: [{ parts: [{ text: masked }] }],
+                    system_instruction: { parts: [{ text: finalPrompt }] },
+                    contents: [{ parts: [{ text: maskedText }] }],
                     generationConfig: { temperature: 0.7 },
                 }),
                 onload(res) {
@@ -447,10 +569,11 @@
     let activeOriginalText = "";
     let activeChatId = "";
     let activeMsgId = "";
+    let transIsFullMode = false;
 
     const updateModalState = () => {
         if (transHistory.length === 0) return;
-        resultContent.innerText = transHistory[transIndex];
+        resultContent.value = transHistory[transIndex];
         historyCount.innerText = `${transIndex + 1} / ${transHistory.length}`;
         prevBtn.disabled = transIndex === 0;
         nextBtn.disabled = transIndex === transHistory.length - 1;
@@ -463,11 +586,9 @@
     closeModalBtn.addEventListener('click', closeResultModal);
     overlay.addEventListener('click', closeResultModal);
 
-    // 내역 이전, 다음 버튼
     prevBtn.addEventListener('click', () => { if (transIndex > 0) { transIndex--; updateModalState(); } });
     nextBtn.addEventListener('click', () => { if (transIndex < transHistory.length - 1) { transIndex++; updateModalState(); } });
 
-    // 리롤 버튼
     rerollBtn.addEventListener('click', async () => {
         try {
             rerollBtn.innerText = '재생성 중... ⏳'; rerollBtn.disabled = true;
@@ -479,12 +600,29 @@
         finally { rerollBtn.innerText = '다시 돌리기'; rerollBtn.disabled = false; }
     });
 
-    // 적용 버튼
     patchModalBtn.addEventListener('click', async () => {
         if (transHistory.length === 0) return;
         try {
             patchModalBtn.innerText = '교체 중... ⏳'; patchModalBtn.disabled = true;
-            await patchMessage(activeChatId, activeMsgId, transHistory[transIndex]);
+
+            // textarea에서 수정한 내용을 가져와서 반영
+            const currentTranslatedText = resultContent.value;
+            transHistory[transIndex] = currentTranslatedText;
+
+            const { id: msgId, content: original } = await fetchLatestBotMessage(activeChatId);
+
+            let newContent = "";
+            if (transIsFullMode) {
+                newContent = currentTranslatedText;
+            } else {
+                if (!original.includes(activeOriginalText)) {
+                    throw new Error("선택한 원문이 최신 답변에 없습니다. 이미 교체되었을 수 있습니다.");
+                }
+                newContent = original.replace(activeOriginalText, currentTranslatedText);
+            }
+
+            await patchMessage(activeChatId, msgId, newContent);
+
             patchModalBtn.innerText = '교체 완료! ✔️ (새로고침 해주세요)';
             setTimeout(() => { closeResultModal(); patchModalBtn.disabled = false; patchModalBtn.innerText = '이 결과로 교체하기'; }, 2000);
         } catch (e) {
@@ -500,7 +638,10 @@
         const ids = parsePath();
         if (!ids) { showToast('채팅방 페이지에서만 사용 가능합니다.'); return; }
 
-        if (!GM_getValue('apiKey', '').trim()) {
+        saveCurrentSettings();
+
+        const provider = apiProviderSelect.value;
+        if (provider === 'google' && !apiKeyInput.value.trim()) {
             setStatus('API 키가 설정되지 않았습니다. 위 항목에서 입력 후 저장해주세요.', 'err');
             return;
         }
@@ -519,8 +660,9 @@
             activeOriginalText = original;
             activeChatId = ids.chatId;
             activeMsgId = msgId;
+            transIsFullMode = true;
 
-            const usePreview = GM_getValue('showPreview', true);
+            const usePreview = previewToggle.checked;
 
             if (usePreview) {
                 setStatus('② 번역 중… (팝업 대기 중)', 'info');
@@ -528,7 +670,7 @@
 
                 transHistory = [translated];
                 transIndex = 0;
-                modalModelSelect.value = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
+                modalModelSelect.value = modelSelect.value;
 
                 panel.style.display = 'none';
                 overlay.style.display = 'block'; resultModal.style.display = 'flex';
@@ -553,9 +695,6 @@
         translateBtn.style.display = isChattingPage() ? 'inline-block' : 'none';
     }
 
-    // =============================================
-    //  설정 패널 이벤트 바인딩
-    // =============================================
     settingBtn.addEventListener('click', (e) => {
         if (dragMoved) { e.preventDefault(); e.stopPropagation(); return; }
         const isOpen = panel.style.display === 'block';
@@ -569,23 +708,81 @@
     });
 
     saveBtn.addEventListener('click', () => {
-        GM_setValue('apiKey',       apiKeyInput.value.trim());
-        GM_setValue('apiModel',     modelSelect.value);
-        GM_setValue('transMode',    modeSelect.value);
-        GM_setValue('showPreview',  previewToggle.checked);
-        GM_setValue('customPrompt', customPromptInput.value);
-
+        saveCurrentSettings();
         saveBtn.textContent = '저장 완료!';
         setTimeout(() => { saveBtn.textContent = '저장하기'; }, 1200);
     });
 
     translateBtn.addEventListener('click', autoTranslate);
 
+    // =============================================
+    //  드래그 번역 로직
+    // =============================================
+    let tooltip = null;
+    const handleTextSelection = (event) => {
+        if (panel.contains(event.target) || settingBtn.contains(event.target) || resultModal.contains(event.target)) return;
+        if (tooltip && tooltip.contains(event.target)) return;
+
+        setTimeout(() => {
+            const selectedText = window.getSelection().toString().trim();
+            if (!selectedText) { if (tooltip) { tooltip.remove(); tooltip = null; } return; }
+            if (tooltip) tooltip.remove();
+
+            tooltip = document.createElement('div'); tooltip.className = 'trans-tooltip';
+            const actionBtn = document.createElement('button'); actionBtn.className = 'trans-action-btn'; actionBtn.innerText = '✨ 번역하기';
+
+            actionBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                saveCurrentSettings();
+
+                tooltip.innerText = "번역 중... ⏳";
+                try {
+                    activeOriginalText = selectedText;
+                    transIsFullMode = false;
+                    activeChatId = parsePath();
+
+                    if (!activeChatId) throw new Error("채팅방 안에서만 교체할 수 있습니다.");
+
+                    const translated = await callGemini(selectedText);
+                    const usePreview = previewToggle.checked;
+
+                    if (usePreview) {
+                        transHistory = [translated];
+                        transIndex = 0;
+                        modalModelSelect.value = modelSelect.value;
+
+                        tooltip.remove(); tooltip = null;
+                        overlay.style.display = 'block'; resultModal.style.display = 'flex';
+                        updateModalState();
+                    } else {
+                        tooltip.innerText = "덮어쓰는 중... ⏳";
+
+                        const { id: msgId, content: original } = await fetchLatestBotMessage(activeChatId);
+                        if (!original.includes(activeOriginalText)) {
+                            throw new Error("선택한 원문이 최신 답변에 없습니다.");
+                        }
+                        const newContent = original.replace(activeOriginalText, translated);
+                        await patchMessage(activeChatId, msgId, newContent);
+
+                        tooltip.innerText = "교체 완료! ✔️ (새로고침 해주세요)";
+                        setTimeout(() => { if (tooltip) { tooltip.remove(); tooltip = null; } }, 2000);
+                    }
+                } catch (err) {
+                    tooltip.innerText = `실패: ${err.message}`;
+                }
+            });
+            tooltip.appendChild(actionBtn); document.body.appendChild(tooltip);
+        }, 100);
+    };
+
+    document.addEventListener('mouseup', handleTextSelection); document.addEventListener('touchend', handleTextSelection);
+    const closeTooltip = (event) => { if (tooltip && !tooltip.contains(event.target) && window.getSelection().toString().trim() === '') { tooltip.remove(); tooltip = null; } };
+    document.addEventListener('mousedown', closeTooltip); document.addEventListener('touchstart', closeTooltip);
+
     syncTranslateBtn();
     let _lastUrl = location.href;
     new MutationObserver(() => {
         if (location.href !== _lastUrl) { _lastUrl = location.href; setTimeout(syncTranslateBtn, 800); }
     }).observe(document, { subtree: true, childList: true });
-    setInterval(syncTranslateBtn, 2000);
 
 })();
