@@ -468,7 +468,7 @@
                         const apps = getApps();
                         const app = apps.length === 0 ? initializeApp(configObj) : getApp();
 
-                        ai = getAI(app, { backend: new VertexAIBackend() });
+                        ai = getAI(app, { backend: new VertexAIBackend('global') });
 
                         const safetySettings = [
                             { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
