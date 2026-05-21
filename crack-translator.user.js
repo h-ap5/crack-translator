@@ -1,177 +1,722 @@
 // ==UserScript==
-// @name         크랙 초월 번역기
+// @name         크랙 초월 번역기 (수정판)
 // @namespace    http://tampermonkey.net/
-// @version      2.8
-// @description  최신 AI 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원.
+// @version      3.0
+// @description  최신 AI 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @run-at       document-end
 // @connect      generativelanguage.googleapis.com
 // ==/UserScript==
 
 (function () {
-    'use strict';
+  'use strict';
 
-    // =============================================
-    //  상수
-    // =============================================
-    const API_BASE = 'https://crack-api.wrtn.ai/crack-gen';
+  const API_BASE = 'https://crack-api.wrtn.ai/crack-gen';
+  const CODE_BLOCK_RE = /```([\s\S]*?)```/g;
+  const FENCE_OPEN_SUB = '===BLOCK_OPEN===';
+  const FENCE_CLOSE_SUB = '===BLOCK_CLOSE===';
+  const FIREBASE_APP_NAME = 'crack-translator-ai';
+  const FIREBASE_LOCATION = 'global';
 
-    // 코드블럭 보존 기호
-    const CODE_BLOCK_RE   = /```([\s\S]*?)```/g;
-    const FENCE_OPEN_SUB  = '===BLOCK_OPEN===';
-    const FENCE_CLOSE_SUB = '===BLOCK_CLOSE===';
+  const MODEL_PRICING = {
+    'gemini-3.1-pro-preview': { input: 2.00, output: 12.00, cacheRead: 0.20, cacheWrite: 2.00 },
+    'gemini-3.1-flash-lite-preview': { input: 0.25, output: 1.50, cacheRead: 0.025, cacheWrite: 0.25 },
+    'gemini-3-flash-preview': { input: 0.50, output: 3.00, cacheRead: 0.05, cacheWrite: 0.50 },
+    'gemini-3.5-flash': { input: 1.50, output: 9.00, cacheRead: 0.15, cacheWrite: 1.50 },
+    'gemini-2.5-pro': { input: 1.25, output: 10.00, cacheRead: 0.125, cacheWrite: 1.25 },
+    'gemini-2.5-flash': { input: 0.30, output: 2.50, cacheRead: 0.03, cacheWrite: 0.30 },
+  };
 
-    // =============================================
-    //  기본 번역 프롬프트
-    // =============================================
-    const baseSystemPrompt = `[역할 및 목적]
+  const baseSystemPrompt = `[역할 및 목적]
 당신은 최상급 웹소설 작가이자 인공지능 캐릭터 롤플레잉 전담 '초월 번역가'입니다. 제공되는 외국어 텍스트를 단순 기계 번역하는 것을 넘어, 캐릭터의 영혼과 감정, 문체, 그리고 상황적 맥락이 생생하게 호흡하는 완벽한 한국어 웹소설 문체로 재창조하는 것이 당신의 유일한 목표입니다.
-
-[작품 전반의 설정 및 문체]
-- 전반적인 문체 및 서술 방식: 고급스럽고 생동감 넘치는 웹소설 문체
-
 [핵심 번역 원칙: 초월 번역]
-1. 완벽한 탈(脫)번역투: 대명사('당신', '나', '그들' 등) 사용을 극도로 제한하고 자연스러운 호칭으로 대체하십시오. 수동태는 능동태로 변환하십시오.
-2. 입체적인 캐릭터 목소리 및 작품 문체 최적화: 감정선의 미세한 변화를 포착하여 대사를 연출하십시오.
-3. 지문과 대사의 극적 분리: 지문은 시각적이고 은유적으로, 대사는 구어체의 생동감과 호흡을 섬세하게 살려 표현하십시오.
-4. 문화적/상황적 맥락의 현지화: 관용구나 유행어는 직역하지 않고 문맥에 어울리는 한국어 표현으로 대체하십시오.
+완벽한 탈(脫)번역투: 대명사 사용을 극도로 제한하고 호칭으로 대체. 수동태는 능동태로.
+지문과 대사의 극적 분리: 지문은 시각적/은유적으로, 대사는 생동감 있게.
+번역 외의 부연 설명 절대 금지. 원문의 마크다운 형태 유지.`;
 
-[출력 및 시스템 규칙]
-- 원문의 형태(줄바꿈, 별표*, 따옴표" " 등) 및 텍스트 기호 구조를 원형대로 유지하십시오.
-- 번역 외의 부연 설명, 인사말, 감상, 주석 등은 절대 출력하지 마십시오. 오직 번역된 본문만 제공하십시오.`;
+  let transHistory = [];
+  let transUsageHistory = [];
+  let transIndex = -1;
+  let activeOriginalText = '';
+  let activeChatId = '';
+  let activeMsgId = '';
+  let thinkingLevels = GM_getValue('thinkingLevels', {});
+  let thinkingBudgets = GM_getValue('thinkingBudgets', {});
+  let nudgeTimer = null;
 
-    // =============================================
-    //  스타일
-    // =============================================
-    GM_addStyle(`
-        #trans-setting-btn {
-            position: fixed; z-index: 999999;
-            background-color: #FF4432; color: white; border: none; border-radius: 50%;
-            width: 48px; height: 48px; font-size: 24px; cursor: move;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: background-color 0.3s;
-            display: flex; align-items: center; justify-content: center; touch-action: none;
-        }
-        #trans-setting-btn:hover { background-color: #e03c2a; }
+  function normalizeUsage(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const pick = (keys) => {
+      for (const k of keys) {
+        const v = raw[k];
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string' && !Number.isNaN(Number(v))) return Number(v);
+      }
+      return 0;
+    };
 
-        #trans-setting-panel {
-            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            z-index: 9999999; background-color: #F7F7F5; border: 1px solid #C7C5BD; border-radius: 8px;
-            padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: none; width: 320px;
-            max-width: 85vw;
-        }
-        #trans-setting-panel h4 { margin: 0 0 12px 0; color: #1A1918; font-family: sans-serif; font-size: 16px; text-align: center; }
-        .trans-label { font-size: 13px; color: #61605A; margin-bottom: 4px; display: block; font-family: sans-serif; font-weight: bold; }
-        #trans-api-provider, #trans-api-key, #trans-firebase-script, #trans-model-select, #trans-mode-select, #trans-custom-prompt {
-            width: 100%; box-sizing: border-box; padding: 8px; margin-bottom: 12px; border: 1px solid #C7C5BD; border-radius: 4px; font-size: 13px; font-family: sans-serif;
-        }
-        #trans-custom-prompt, #trans-firebase-script { resize: vertical; }
-        .trans-toggle-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1A1918; font-family: sans-serif; font-weight: bold; margin-bottom: 12px; cursor: pointer; }
+    return {
+      model: raw.model || '',
+      inputTokens: pick(['inputTokens', 'input_tokens', 'promptTokenCount', 'prompt_token_count', 'promptTokens']),
+      outputTokens: pick(['outputTokens', 'output_tokens', 'candidatesTokenCount', 'candidates_token_count']),
+      cacheReadInputTokens: pick(['cacheReadInputTokens', 'cache_read_input_tokens', 'cachedContentTokenCount', 'cached_content_token_count']),
+      thoughtsTokenCount: pick(['thoughtsTokenCount', 'thoughts_token_count', 'thinking_tokens']),
+    };
+  }
 
-        .trans-btn-group { display: flex; gap: 6px; margin-bottom: 10px; }
-        .trans-panel-btn { flex: 1; padding: 10px 6px; border-radius: 6px; cursor: pointer; border: none; font-size: 13px; font-weight: bold; color: white; white-space: nowrap; }
-        #trans-reset-btn { background-color: #61605A; }
-        #trans-reset-btn:hover { background-color: #42413D; }
-        #trans-save-btn { background-color: #FF4432; }
-        #trans-save-btn:hover { background-color: #e03c2a; }
-        #trans-translate-btn { background-color: #6A3DE8; width: 100%; margin-top: 4px; display: none; }
-        #trans-translate-btn:hover { background-color: #5228CC; }
-        #trans-translate-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  function calculateCost(usage, exchangeRate = 1500, modelOverride = '') {
+    const u = usage ? normalizeUsage(usage) : null;
+    if (!u) return null;
 
-        #trans-status-box { margin-top: 10px; padding: 8px 10px; border-radius: 4px; background-color: #EEEEEE; border: 1px solid #E5E5E1; font-size: 12px; font-family: sans-serif; color: #61605A; line-height: 1.5; min-height: 32px; display: none; word-break: break-word; text-align: center; }
-        #trans-status-box.active { display: block; }
-        #trans-status-box.ok   { color: #1a7a3a; background: #f0faf3; border-color: #a8d5b5; }
-        #trans-status-box.err  { color: #b91c1c; background: #fff0f0; border-color: #f5a0a0; }
-        #trans-status-box.info { color: #4A4A8A; background: #f3f0ff; border-color: #c4b8f5; }
+    const modelIdRaw = u.model || modelOverride;
+    const pricing = MODEL_PRICING[modelIdRaw] || MODEL_PRICING['gemini-3-flash-preview'];
+    if (!pricing) return null;
 
-        #trans-result-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(0, 0, 0, 0.4); z-index: 9999998; display: none; }
-        #trans-result-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #FFFFFF; border-radius: 12px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); z-index: 9999999; width: 85%; max-width: 600px; display: none; flex-direction: column; gap: 12px; }
-        .trans-modal-header { display: flex; justify-content: space-between; align-items: center; }
-        .trans-modal-header h3 { margin: 0; color: #1A1918; font-family: sans-serif; font-size: 18px; }
-        .trans-reroll-group { display: flex; gap: 6px; }
-        #trans-modal-model { padding: 6px; border-radius: 4px; border: 1px solid #C7C5BD; font-size: 13px; }
-        #trans-reroll-btn { background-color: #61605A; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; }
-        #trans-reroll-btn:hover { background-color: #42413D; }
-        #trans-reroll-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    const thoughtsTokens = u.thoughtsTokenCount || 0;
+    const cacheReadTokens = u.cacheReadInputTokens || 0;
+    const totalInputTokens = u.inputTokens || 0;
+    const totalOutputTokens = u.outputTokens || 0;
+    const actualOutputTokens = thoughtsTokens > 0 && totalOutputTokens >= thoughtsTokens
+      ? totalOutputTokens - thoughtsTokens
+      : totalOutputTokens;
 
-        #trans-result-content {
-            background-color: #F7F7F5; padding: 16px; border-radius: 8px; font-size: 14px;
-            line-height: 1.6; color: #1A1918; border: 1px solid #E5E5E1; height: 40vh;
-            width: 100%; box-sizing: border-box; resize: vertical; outline: none;
-            font-family: sans-serif; white-space: pre-wrap;
-        }
-        #trans-result-content:focus { border-color: #6A3DE8; }
+    const uncachedInputTokens = Math.max(0, totalInputTokens - cacheReadTokens);
+    const readCost = (cacheReadTokens * pricing.cacheRead) / 1000000;
+    const writeCost = (uncachedInputTokens * pricing.cacheWrite) / 1000000;
+    const outputCost = (actualOutputTokens * pricing.output) / 1000000;
+    const thoughtsCost = (thoughtsTokens * pricing.output) / 1000000;
+    const totalUsd = readCost + writeCost + outputCost + thoughtsCost;
 
-        .trans-modal-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-        .trans-history-nav { display: flex; align-items: center; gap: 8px; }
-        .trans-nav-btn { background: #E5E5E1; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; }
-        .trans-nav-btn:hover { background: #D4D4D0; }
-        .trans-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-        #trans-history-count { font-size: 13px; font-family: sans-serif; font-weight: bold; color: #61605A; }
-        .trans-modal-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-        .trans-modal-btn { padding: 8px 14px; border-radius: 6px; cursor: pointer; border: none; font-weight: bold; font-size: 14px; color: white; }
-        .trans-close-btn { background-color: #E5E5E1; color: #1A1918; }
-        .trans-close-btn:hover { background-color: #D4D4D0; }
-        .trans-patch-btn { background-color: #6A3DE8; }
-        .trans-patch-btn:hover { background-color: #5228CC; }
-        #trans-toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); background: rgba(30,30,30,0.92); color: #fff; padding: 10px 20px; border-radius: 20px; font-size: 13px; font-family: sans-serif; z-index: 9999999; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
-        #trans-toast.show { opacity: 1; }
-    `);
+    return {
+      usd: totalUsd,
+      krw: totalUsd * exchangeRate,
+      tokens: {
+        read: cacheReadTokens,
+        write: uncachedInputTokens,
+        output: actualOutputTokens,
+        thoughts: thoughtsTokens,
+      },
+    };
+  }
 
-    // =============================================
-    //  DOM 빌드
-    // =============================================
-    const settingBtn = document.createElement('button');
-    settingBtn.id = 'trans-setting-btn';
-    settingBtn.innerHTML = '⚙️';
-    document.body.appendChild(settingBtn);
+  function addStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+#trans-setting-panel,
+#trans-result-modal,
+#trans-nudge {
+  --t-bg: #ffffff;
+  --t-surface: #f7f7f5;
+  --t-raised: #ffffff;
+  --t-border: #d9d7cf;
+  --t-accent: #6a3de8;
+  --t-accent2: #7c5cfc;
+  --t-danger: #d92d20;
+  --t-success: #07845f;
+  --t-warn: #9a6700;
+  --t-tx1: #1a1918;
+  --t-tx2: #62605a;
+  --t-tx3: #85837d;
+  --t-shadow: 0 24px 60px rgba(20, 20, 20, .22), 0 4px 16px rgba(20, 20, 20, .14);
+  --t-font: "Noto Sans KR", "Apple SD Gothic Neo", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
 
+#trans-setting-panel.trans-theme-dark,
+#trans-result-modal.trans-theme-dark,
+#trans-nudge.trans-theme-dark {
+  --t-bg: #111113;
+  --t-surface: #18181c;
+  --t-raised: #202026;
+  --t-border: #2e2e38;
+  --t-accent: #8b6ffc;
+  --t-accent2: #b4a0ff;
+  --t-danger: #f87171;
+  --t-success: #34d399;
+  --t-warn: #fbbf24;
+  --t-tx1: #eeedf2;
+  --t-tx2: #aaa7b8;
+  --t-tx3: #777486;
+  --t-shadow: 0 24px 60px rgba(0, 0, 0, .72), 0 4px 12px rgba(0, 0, 0, .5);
+}
+
+#trans-setting-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2147483647 !important;
+  display: none;
+  width: 370px;
+  max-width: calc(100vw - 28px);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--t-bg);
+  border: 1px solid var(--t-border);
+  border-radius: 14px;
+  box-shadow: var(--t-shadow);
+  font-family: var(--t-font);
+  color: var(--t-tx1);
+}
+
+#trans-panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--t-bg);
+  border-bottom: 1px solid var(--t-border);
+  padding: 16px 18px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#trans-panel-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--t-tx1);
+}
+
+#trans-close-settings-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx2);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+#trans-panel-body {
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.t-section {
+  background: var(--t-surface);
+  border: 1px solid var(--t-border);
+  border-radius: 10px;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.t-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--t-tx3);
+}
+
+.t-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.trans-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--t-tx2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#trans-api-provider,
+#trans-api-key,
+#trans-firebase-script,
+#trans-model-select,
+#trans-mode-select,
+#trans-custom-prompt,
+#g-think-val,
+#trans-modal-model {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--t-raised);
+  border: 1px solid var(--t-border);
+  border-radius: 8px;
+  color: var(--t-tx1);
+  font-family: var(--t-font);
+  font-size: 13px;
+  outline: none;
+}
+
+#trans-api-provider:focus,
+#trans-api-key:focus,
+#trans-firebase-script:focus,
+#trans-model-select:focus,
+#trans-mode-select:focus,
+#trans-custom-prompt:focus,
+#g-think-val:focus,
+#trans-modal-model:focus {
+  border-color: var(--t-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-accent) 20%, transparent);
+}
+
+.t-select-arrow {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--t-tx2) 50%), linear-gradient(135deg, var(--t-tx2) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px !important;
+}
+
+#trans-custom-prompt,
+#trans-firebase-script {
+  resize: vertical;
+  min-height: 76px;
+  line-height: 1.55;
+}
+
+#trans-custom-prompt {
+  min-height: 118px;
+}
+
+.t-check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--t-border);
+  border-radius: 8px;
+  background: var(--t-raised);
+  color: var(--t-tx1);
+  cursor: pointer;
+  user-select: none;
+}
+
+.t-check-row input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--t-accent);
+}
+
+.t-check-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.t-check-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--t-tx3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.t-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.t-btn,
+#trans-direct-apply-btn,
+#trans-close-modal,
+#trans-patch-modal,
+#trans-reroll-btn,
+.trans-nav-btn {
+  font-family: var(--t-font);
+  transition: opacity .15s, transform .08s, background .15s, border-color .15s;
+}
+
+.t-btn {
+  flex: 1;
+  padding: 9px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--t-border);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.t-btn:active,
+#trans-direct-apply-btn:active,
+#trans-patch-modal:active {
+  transform: scale(.98);
+}
+
+.t-btn:disabled,
+#trans-direct-apply-btn:disabled,
+#trans-patch-modal:disabled,
+#trans-reroll-btn:disabled,
+.trans-nav-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.t-btn-ghost {
+  background: var(--t-raised);
+  color: var(--t-tx2);
+}
+
+.t-btn-primary,
+#trans-direct-apply-btn,
+#trans-patch-modal {
+  background: var(--t-accent);
+  border: 1px solid var(--t-accent);
+  color: #fff;
+}
+
+#trans-direct-apply-btn {
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+#trans-status-box {
+  display: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  background: var(--t-raised);
+  border: 1px solid var(--t-border);
+  color: var(--t-tx2);
+}
+
+#trans-status-box.active {
+  display: block;
+}
+
+#trans-status-box.ok {
+  border-color: color-mix(in srgb, var(--t-success) 45%, var(--t-border));
+  color: var(--t-success);
+}
+
+#trans-status-box.err {
+  border-color: color-mix(in srgb, var(--t-danger) 45%, var(--t-border));
+  color: var(--t-danger);
+}
+
+#trans-status-box.info {
+  border-color: color-mix(in srgb, var(--t-accent) 45%, var(--t-border));
+  color: var(--t-accent2);
+}
+
+#trans-result-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646 !important;
+  display: none;
+  background: rgba(0, 0, 0, .42);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+#trans-result-overlay.trans-theme-dark {
+  background: rgba(0, 0, 0, .65);
+}
+
+#trans-result-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2147483647 !important;
+  display: none;
+  flex-direction: column;
+  width: min(680px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  background: var(--t-bg);
+  border: 1px solid var(--t-border);
+  border-radius: 14px;
+  box-shadow: var(--t-shadow);
+  font-family: var(--t-font);
+  color: var(--t-tx1);
+  overflow: hidden;
+}
+
+.t-modal-header,
+.t-modal-footer {
+  background: var(--t-surface);
+  border-color: var(--t-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.t-modal-header {
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--t-border);
+}
+
+.t-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--t-tx1);
+}
+
+.t-modal-title-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--t-accent) 30%, var(--t-border));
+  color: var(--t-accent2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.t-reroll-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#trans-modal-model {
+  width: 150px;
+  font-size: 12px;
+}
+
+#trans-reroll-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--t-border);
+  border-radius: 8px;
+  background: var(--t-raised);
+  color: var(--t-tx1);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.t-modal-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#trans-result-content {
+  width: 100%;
+  box-sizing: border-box;
+  height: 38vh;
+  min-height: 180px;
+  resize: vertical;
+  padding: 13px 15px;
+  background: var(--t-surface);
+  border: 1px solid var(--t-border);
+  border-radius: 10px;
+  color: var(--t-tx1);
+  font-family: var(--t-font);
+  font-size: 14px;
+  line-height: 1.72;
+  outline: none;
+}
+
+#trans-result-content:focus {
+  border-color: var(--t-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-accent) 18%, transparent);
+}
+
+#trans-cost-info {
+  min-height: 16px;
+  color: var(--t-tx3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+#trans-cost-info:not(:empty) {
+  color: var(--t-warn);
+}
+
+.t-modal-footer {
+  padding: 13px 18px;
+  border-top: 1px solid var(--t-border);
+  flex-wrap: wrap;
+}
+
+.t-history-nav,
+.t-modal-action-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.trans-nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx2);
+  cursor: pointer;
+}
+
+#trans-history-count {
+  min-width: 44px;
+  text-align: center;
+  color: var(--t-tx2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#trans-close-modal,
+#trans-patch-modal {
+  padding: 9px 15px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+#trans-close-modal {
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx2);
+}
+
+#trans-nudge {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 14px);
+  z-index: 2147483647 !important;
+  max-width: min(460px, calc(100vw - 28px));
+  padding: 11px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--t-border);
+  background: var(--t-bg);
+  box-shadow: var(--t-shadow);
+  color: var(--t-tx1);
+  font-family: var(--t-font);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#trans-nudge.active {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+#trans-nudge.info {
+  border-color: color-mix(in srgb, var(--t-accent) 45%, var(--t-border));
+  color: var(--t-accent2);
+}
+
+#trans-nudge.ok {
+  border-color: color-mix(in srgb, var(--t-success) 45%, var(--t-border));
+  color: var(--t-success);
+}
+
+#trans-nudge.err {
+  border-color: color-mix(in srgb, var(--t-danger) 45%, var(--t-border));
+  color: var(--t-danger);
+}
+
+@media (max-width: 560px) {
+  .t-modal-header,
+  .t-modal-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .t-reroll-group,
+  .t-modal-action-row {
+    width: 100%;
+  }
+
+  #trans-modal-model,
+  #trans-reroll-btn,
+  #trans-close-modal,
+  #trans-patch-modal {
+    flex: 1;
+  }
+}`;
+    document.head.appendChild(style);
+  }
+
+  function createUI() {
     const panel = document.createElement('div');
     panel.id = 'trans-setting-panel';
     panel.innerHTML = `
-        <h4>초월 번역 설정</h4>
+<div id="trans-panel-header">
+  <h4>초월 번역 설정</h4>
+  <button id="trans-close-settings-btn" type="button">✕</button>
+</div>
+<div id="trans-panel-body">
+  <div class="t-section">
+    <div class="t-section-title">API 설정</div>
+    <div class="t-field">
+      <label class="trans-label" for="trans-api-provider">제공자</label>
+      <select id="trans-api-provider" class="t-select-arrow">
+        <option value="google">Google API</option>
+        <option value="firebase">Firebase</option>
+      </select>
+    </div>
+    <div class="t-field">
+      <label class="trans-label" id="trans-key-label" for="trans-api-key">API Key</label>
+      <input type="password" id="trans-api-key" placeholder="API Key를 입력하세요">
+      <textarea id="trans-firebase-script" placeholder="Firebase Config 코드를 붙여넣으세요" style="display:none;"></textarea>
+    </div>
+  </div>
 
-        <span class="trans-label">API 제공자:</span>
-        <select id="trans-api-provider">
-            <option value="google">Google (기본 API)</option>
-            <option value="firebase">Firebase (Vertex API)</option>
-        </select>
+  <div class="t-section">
+    <div class="t-section-title">모델 & 추론</div>
+    <div class="t-field">
+      <label class="trans-label" for="trans-model-select">모델 선택</label>
+      <select id="trans-model-select" class="t-select-arrow">
+        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+        <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview</option>
+        <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+      </select>
+    </div>
+    <div id="trans-thinking-container" data-current-model=""></div>
+  </div>
 
-        <span class="trans-label" id="trans-key-label">열쇠 고리 (API 키):</span>
-        <input type="password" id="trans-api-key" placeholder="API 키를 입력해주세요">
-        <textarea id="trans-firebase-script" rows="6" placeholder="파이어베이스에서 복사한 코드 전체를 여기에 그대로 붙여넣어 주세요!" style="display:none; font-family: monospace;"></textarea>
+  <div class="t-section">
+    <div class="t-section-title">번역 설정</div>
+    <div class="t-field">
+      <label class="trans-label" for="trans-mode-select">번역 방식</label>
+      <select id="trans-mode-select" class="t-select-arrow">
+        <option value="ko">한글 전용 (기본)</option>
+        <option value="en">영문 혼용</option>
+      </select>
+    </div>
+    <label class="t-check-row" for="trans-instant-apply">
+      <input id="trans-instant-apply" type="checkbox">
+      <span>
+        <span class="t-check-title">말풍선 ✨ 클릭 시 즉시 교체</span>
+        <span class="t-check-desc">체크하면 결과 팝업 없이 최신 메시지를 바로 패치하고 예상 금액을 nudge로 보여줍니다.</span>
+      </span>
+    </label>
+    <div class="t-field">
+      <label class="trans-label" for="trans-custom-prompt">번역 지침서</label>
+      <textarea id="trans-custom-prompt" rows="6"></textarea>
+    </div>
+  </div>
 
-        <span class="trans-label">제미나이 모델 선택:</span>
-        <select id="trans-model-select">
-            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (최상급)</option>
-            <option value="gemini-3-flash-preview">Gemini 3 Flash Preview (다목적)</option>
-            <option value="gemini-2.5-pro">Gemini 2.5 Pro (안정/고성능)</option>
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash (빠름)</option>
-        </select>
+  <div class="t-btn-row">
+    <button class="t-btn t-btn-ghost" id="trans-reset-btn" type="button">↺ 초기화</button>
+    <button class="t-btn t-btn-primary" id="trans-save-btn" type="button">저장</button>
+  </div>
 
-        <span class="trans-label">번역 방식:</span>
-        <select id="trans-mode-select">
-            <option value="ko">한글 전용 (기본)</option>
-            <option value="en">영문 혼용 (영어/한국어)</option>
-        </select>
-
-        <label class="trans-toggle-label">
-            <input type="checkbox" id="trans-preview-toggle"> 팝업으로 미리보기 (끄면 자동 교체)
-        </label>
-
-        <span class="trans-label">번역 지침서 (수정 가능):</span>
-        <textarea id="trans-custom-prompt" rows="6"></textarea>
-
-        <div class="trans-btn-group">
-            <button class="trans-panel-btn" id="trans-reset-btn">기본값 복구</button>
-            <button class="trans-panel-btn" id="trans-save-btn">저장하기</button>
-        </div>
-        <button class="trans-panel-btn" id="trans-translate-btn">✨ 최신 답변 번역하기</button>
-
-        <div id="trans-status-box"></div>
-    `;
+  <button id="trans-direct-apply-btn" type="button">✨ 최신 답변 바로 번역 (팝업 없이)</button>
+  <div id="trans-status-box"></div>
+</div>`;
     document.body.appendChild(panel);
 
     const overlay = document.createElement('div');
@@ -181,608 +726,735 @@
     const resultModal = document.createElement('div');
     resultModal.id = 'trans-result-modal';
     resultModal.innerHTML = `
-        <div class="trans-modal-header">
-            <h3>✨ 번역 결과 확인</h3>
-            <div class="trans-reroll-group">
-                <select id="trans-modal-model">
-                    <option value="gemini-3.1-pro-preview">3.1 Pro</option>
-                    <option value="gemini-3-flash-preview">3 Flash</option>
-                    <option value="gemini-2.5-pro">2.5 Pro</option>
-                    <option value="gemini-2.5-flash">2.5 Flash</option>
-                </select>
-                <button id="trans-reroll-btn">다시 돌리기</button>
-            </div>
-        </div>
-        <textarea id="trans-result-content"></textarea>
-        <div class="trans-modal-footer">
-            <div class="trans-history-nav">
-                <button class="trans-nav-btn" id="trans-prev-btn">◀ 이전</button>
-                <span id="trans-history-count">1 / 1</span>
-                <button class="trans-nav-btn" id="trans-next-btn">다음 ▶</button>
-            </div>
-            <div class="trans-modal-btns">
-                <button class="trans-modal-btn trans-close-btn" id="trans-close-modal">닫기</button>
-                <button class="trans-modal-btn trans-patch-btn" id="trans-patch-modal">이 결과로 교체하기</button>
-            </div>
-        </div>
-    `;
+<div class="t-modal-header">
+  <div class="t-modal-title">✨ 번역 결과 <span class="t-modal-title-badge">초월 번역</span></div>
+  <div class="t-reroll-group">
+    <select id="trans-modal-model" class="t-select-arrow">
+      <option value="gemini-3.1-pro-preview">3.1 Pro</option>
+      <option value="gemini-3.1-flash-lite-preview">3.1 Flash Lite</option>
+      <option value="gemini-3-flash-preview">3 Flash</option>
+      <option value="gemini-2.5-pro">2.5 Pro</option>
+      <option value="gemini-2.5-flash">2.5 Flash</option>
+    </select>
+    <button id="trans-reroll-btn" type="button">↻ 다시 돌리기</button>
+  </div>
+</div>
+<div class="t-modal-body">
+  <textarea id="trans-result-content" placeholder="번역 결과가 여기에 표시됩니다..."></textarea>
+  <div id="trans-cost-info"></div>
+</div>
+<div class="t-modal-footer">
+  <div class="t-history-nav">
+    <button class="trans-nav-btn" id="trans-prev-btn" type="button" aria-label="이전">◀</button>
+    <span id="trans-history-count">1 / 1</span>
+    <button class="trans-nav-btn" id="trans-next-btn" type="button" aria-label="다음">▶</button>
+  </div>
+  <div class="t-modal-action-row">
+    <button id="trans-close-modal" type="button">닫기</button>
+    <button id="trans-patch-modal" type="button">이 결과로 교체하기</button>
+  </div>
+</div>`;
     document.body.appendChild(resultModal);
 
-    const toast = document.createElement('div');
-    toast.id = 'trans-toast';
-    document.body.appendChild(toast);
+    const nudge = document.createElement('div');
+    nudge.id = 'trans-nudge';
+    document.body.appendChild(nudge);
 
-    // =============================================
-    //  설정 요소 참조 및 초기값 로드
-    // =============================================
+    syncTranslatorTheme();
+    bindUIEvents();
+  }
+
+  function bindUIEvents() {
     const apiProviderSelect = document.getElementById('trans-api-provider');
-    const apiKeyInput       = document.getElementById('trans-api-key');
+    const apiKeyInput = document.getElementById('trans-api-key');
     const firebaseScriptInput = document.getElementById('trans-firebase-script');
-    const keyLabel          = document.getElementById('trans-key-label');
-    const modelSelect       = document.getElementById('trans-model-select');
-    const modeSelect        = document.getElementById('trans-mode-select');
-    const previewToggle     = document.getElementById('trans-preview-toggle');
+    const keyLabel = document.getElementById('trans-key-label');
+    const modelSelect = document.getElementById('trans-model-select');
+    const modeSelect = document.getElementById('trans-mode-select');
     const customPromptInput = document.getElementById('trans-custom-prompt');
-    const saveBtn           = document.getElementById('trans-save-btn');
-    const resetBtn          = document.getElementById('trans-reset-btn');
-    const translateBtn      = document.getElementById('trans-translate-btn');
-    const statusBox         = document.getElementById('trans-status-box');
-
-    const resultContent     = document.getElementById('trans-result-content');
-    const closeModalBtn     = document.getElementById('trans-close-modal');
-    const patchModalBtn     = document.getElementById('trans-patch-modal');
-    const modalModelSelect  = document.getElementById('trans-modal-model');
-    const rerollBtn         = document.getElementById('trans-reroll-btn');
-    const prevBtn           = document.getElementById('trans-prev-btn');
-    const nextBtn           = document.getElementById('trans-next-btn');
-    const historyCount      = document.getElementById('trans-history-count');
+    const thinkContainer = document.getElementById('trans-thinking-container');
+    const instantApplyInput = document.getElementById('trans-instant-apply');
+    const saveBtn = document.getElementById('trans-save-btn');
+    const resetBtn = document.getElementById('trans-reset-btn');
+    const directApplyBtn = document.getElementById('trans-direct-apply-btn');
+    const closeSettingsBtn = document.getElementById('trans-close-settings-btn');
+    const statusBox = document.getElementById('trans-status-box');
+    const resultContent = document.getElementById('trans-result-content');
+    const closeModalBtn = document.getElementById('trans-close-modal');
+    const patchModalBtn = document.getElementById('trans-patch-modal');
+    const modalModelSelect = document.getElementById('trans-modal-model');
+    const rerollBtn = document.getElementById('trans-reroll-btn');
+    const prevBtn = document.getElementById('trans-prev-btn');
+    const nextBtn = document.getElementById('trans-next-btn');
 
     apiProviderSelect.value = GM_getValue('apiProvider', 'google');
-    apiKeyInput.value       = GM_getValue('apiKey', '');
+    apiKeyInput.value = GM_getValue('apiKey', '');
     firebaseScriptInput.value = GM_getValue('firebaseScript', '');
-    modelSelect.value       = GM_getValue('apiModel', 'gemini-3.1-pro-preview');
-    modeSelect.value        = GM_getValue('transMode', 'ko');
-    previewToggle.checked   = GM_getValue('showPreview', true);
+    modelSelect.value = GM_getValue('apiModel', 'gemini-2.5-pro');
+    modeSelect.value = GM_getValue('transMode', 'ko');
     customPromptInput.value = GM_getValue('customPrompt', baseSystemPrompt);
+    instantApplyInput.checked = GM_getValue('instantApply', false);
+    modalModelSelect.value = modelSelect.value;
 
     const toggleProviderUI = () => {
-        if (apiProviderSelect.value === 'firebase') {
-            apiKeyInput.style.display = 'none';
-            firebaseScriptInput.style.display = 'block';
-            keyLabel.innerText = 'Firebase Config 복붙창:';
-        } else {
-            apiKeyInput.style.display = 'block';
-            firebaseScriptInput.style.display = 'none';
-            keyLabel.innerText = '열쇠 고리 (API 키):';
-        }
+      const isFirebase = apiProviderSelect.value === 'firebase';
+      apiKeyInput.style.display = isFirebase ? 'none' : 'block';
+      firebaseScriptInput.style.display = isFirebase ? 'block' : 'none';
+      keyLabel.textContent = isFirebase ? 'Firebase Config' : 'API Key';
+      keyLabel.setAttribute('for', isFirebase ? 'trans-firebase-script' : 'trans-api-key');
     };
-    apiProviderSelect.addEventListener('change', toggleProviderUI);
-    toggleProviderUI();
 
-    apiKeyInput.addEventListener('focus', () => { apiKeyInput.type = 'text'; });
-    apiKeyInput.addEventListener('blur', () => { apiKeyInput.type = 'password'; });
+    function saveThinkVal(model) {
+      if (!model) return;
+      const input = document.getElementById('g-think-val');
+      if (!input) return;
 
-    // 번역 시작 시 강제 저장 로직
+      if (model.includes('gemini-3')) {
+        thinkingLevels[model] = input.value;
+      } else if (model.includes('gemini-2.5')) {
+        let val = parseInt(input.value, 10) || 1024;
+        if (val < 128) val = 128;
+        thinkingBudgets[model] = val;
+      }
+    }
+
+    function updateThinkingUI() {
+      const currentModel = modelSelect.value;
+      let html = '';
+
+      if (currentModel.includes('gemini-3')) {
+        let currentLevel = thinkingLevels[currentModel] || 'medium';
+        const labelPrefix = currentModel.includes('pro') ? '3.1 Pro' : 'Flash';
+        if (currentModel.includes('pro') && currentLevel === 'minimal') currentLevel = 'low';
+        const opts = currentModel.includes('pro')
+          ? `<option value="low" ${currentLevel === 'low' ? 'selected' : ''}>Low</option>
+             <option value="medium" ${currentLevel === 'medium' ? 'selected' : ''}>Medium</option>
+             <option value="high" ${currentLevel === 'high' ? 'selected' : ''}>High</option>`
+          : `<option value="minimal" ${currentLevel === 'minimal' ? 'selected' : ''}>Minimal</option>
+             <option value="low" ${currentLevel === 'low' ? 'selected' : ''}>Low</option>
+             <option value="medium" ${currentLevel === 'medium' ? 'selected' : ''}>Medium</option>
+             <option value="high" ${currentLevel === 'high' ? 'selected' : ''}>High</option>`;
+
+        html = `<div class="t-field">
+          <label class="trans-label" for="g-think-val">🧠 ${labelPrefix} 추론 레벨</label>
+          <select id="g-think-val" class="t-select-arrow">${opts}</select>
+        </div>`;
+      } else if (currentModel.includes('gemini-2.5')) {
+        const budget = thinkingBudgets[currentModel] || 1024;
+        html = `<div class="t-field">
+          <label class="trans-label" for="g-think-val">🧠 2.5 추론 예산 (최소 128)</label>
+          <input type="number" id="g-think-val" min="128" value="${budget}">
+        </div>`;
+      }
+
+      thinkContainer.innerHTML = html;
+      thinkContainer.setAttribute('data-current-model', currentModel);
+    }
+
     const saveCurrentSettings = () => {
-        GM_setValue('apiProvider',  apiProviderSelect.value);
-        GM_setValue('apiKey',       apiKeyInput.value.trim());
-        GM_setValue('firebaseScript', firebaseScriptInput.value.trim());
-        GM_setValue('apiModel',     modelSelect.value);
-        GM_setValue('transMode',    modeSelect.value);
-        GM_setValue('showPreview',  previewToggle.checked);
-        GM_setValue('customPrompt', customPromptInput.value);
+      saveThinkVal(thinkContainer.getAttribute('data-current-model'));
+      GM_setValue('apiProvider', apiProviderSelect.value);
+      GM_setValue('apiKey', apiKeyInput.value.trim());
+      GM_setValue('firebaseScript', firebaseScriptInput.value.trim());
+      GM_setValue('apiModel', modelSelect.value);
+      GM_setValue('transMode', modeSelect.value);
+      GM_setValue('customPrompt', customPromptInput.value);
+      GM_setValue('instantApply', instantApplyInput.checked);
+      GM_setValue('thinkingLevels', thinkingLevels);
+      GM_setValue('thinkingBudgets', thinkingBudgets);
     };
 
-    // =============================================
-    //  드래그 (화면 이탈 방지 로직 적용)
-    // =============================================
-    let isDragging = false, dragMoved = false, startX, startY, initialLeft, initialTop;
-
-    const clampButtonPosition = () => {
-        if (!settingBtn.style.left || !settingBtn.style.top) return;
-        let currentLeft = parseFloat(settingBtn.style.left);
-        let currentTop = parseFloat(settingBtn.style.top);
-
-        const maxX = window.innerWidth - (settingBtn.offsetWidth || 48);
-        const maxY = window.innerHeight - (settingBtn.offsetHeight || 48);
-
-        if (isNaN(currentLeft) || currentLeft < 0) currentLeft = 20;
-        if (currentLeft > maxX) currentLeft = maxX - 20;
-        if (isNaN(currentTop) || currentTop < 0) currentTop = 20;
-        if (currentTop > maxY) currentTop = maxY - 20;
-
-        settingBtn.style.left = currentLeft + 'px';
-        settingBtn.style.top = currentTop + 'px';
-        GM_setValue('btnPosX', settingBtn.style.left);
-        GM_setValue('btnPosY', settingBtn.style.top);
-    };
-
-    const savedLeft = GM_getValue('btnPosX', '');
-    const savedTop = GM_getValue('btnPosY', '');
-    if (savedLeft && savedTop) {
-        settingBtn.style.left = savedLeft; settingBtn.style.top = savedTop;
-        settingBtn.style.bottom = 'auto'; settingBtn.style.right = 'auto';
-    } else {
-        settingBtn.style.left = (window.innerWidth - 68) + 'px';
-        settingBtn.style.top = (window.innerHeight - 68) + 'px';
-    }
-
-    setTimeout(clampButtonPosition, 100);
-    window.addEventListener('resize', clampButtonPosition);
-
-    function startDrag(e) {
-        if (e.type === 'mousedown' && e.button !== 0) return;
-        isDragging = true; dragMoved = false;
-        startX = e.type.includes('mouse') ? e.clientX : e.touches[0].clientX;
-        startY = e.type.includes('mouse') ? e.clientY : e.touches[0].clientY;
-        const rect = settingBtn.getBoundingClientRect();
-        initialLeft = rect.left; initialTop = rect.top;
-        settingBtn.style.bottom = 'auto'; settingBtn.style.right = 'auto';
-    }
-    function moveDrag(e) {
-        if (!isDragging) return;
-        const dx = (e.type.includes('mouse') ? e.clientX : e.touches[0].clientX) - startX;
-        const dy = (e.type.includes('mouse') ? e.clientY : e.touches[0].clientY) - startY;
-        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
-
-        if (dragMoved) {
-            e.preventDefault();
-            const w = window.innerWidth, h = window.innerHeight;
-            const btnW = settingBtn.offsetWidth, btnH = settingBtn.offsetHeight;
-            let newL = initialLeft + dx, newT = initialTop + dy;
-
-            newL = Math.max(0, Math.min(newL, w - btnW));
-            newT = Math.max(0, Math.min(newT, h - btnH));
-
-            settingBtn.style.left = newL + 'px';
-            settingBtn.style.top = newT + 'px';
-        }
-    }
-    function stopDrag(e) {
-        if (!isDragging) return;
-        isDragging = false;
-        if (dragMoved) { clampButtonPosition(); }
-    }
-
-    settingBtn.addEventListener('mousedown', startDrag); document.addEventListener('mousemove', moveDrag, { passive: false }); document.addEventListener('mouseup', stopDrag);
-    settingBtn.addEventListener('touchstart', startDrag, { passive: false }); document.addEventListener('touchmove', moveDrag, { passive: false }); document.addEventListener('touchend', stopDrag);
-
-    // =============================================
-    //  유틸리티
-    // =============================================
-    function showToast(msg, duration = 3000) {
-        toast.textContent = msg; toast.classList.add('show');
-        setTimeout(() => toast.classList.remove('show'), duration);
-    }
-    function setStatus(msg, type = 'info') {
-        statusBox.textContent = msg; statusBox.className = `active ${type}`;
-    }
-    function clearStatus() {
-        statusBox.className = ''; statusBox.textContent = '';
-    }
-    function getToken() {
-        const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('access_token='));
-        return match ? match.slice('access_token='.length) : null;
-    }
-    function buildHeaders() {
-        const token  = getToken();
-        const wrtnId = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('__w_id='))?.slice('__w_id='.length) ?? '';
-        const h = { 'Content-Type': 'application/json', 'platform': 'web', 'wrtn-locale': 'ko-KR' };
-        if (token)  h['Authorization'] = `Bearer ${token}`;
-        if (wrtnId) h['x-wrtn-id'] = wrtnId;
-        return h;
-    }
-    function parsePath() {
-        const m = location.pathname.match(/\/stories\/([^/]+)\/episodes\/([^/]+)/);
-        return m ? { storyId: m[1], chatId: m[2] } : null;
-    }
-    function isChattingPage() { return !!parsePath(); }
-    function buildFinalPrompt() {
-        let p = customPromptInput.value;
-        if (modeSelect.value === 'en')
-            p += '\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.';
-        return p;
-    }
-
-    function maskCodeBlocks(text) { return text.replace(CODE_BLOCK_RE, (_, inner) => FENCE_OPEN_SUB + inner + FENCE_CLOSE_SUB); }
-    function unmaskCodeBlocks(text) { return text.split(FENCE_OPEN_SUB).join('```').split(FENCE_CLOSE_SUB).join('```'); }
-    function stripOuterFence(text) { return text.replace(/^\`\`\`[^\n]*\n([\s\S]*?)\n\`\`\`\s*$/m, '$1').trim(); }
-
-    // =============================================
-    //  API 통신
-    // =============================================
-    function parseVertexContent(vertexAiScript) {
-        if (vertexAiScript.length <= 0) return undefined;
-        const startText = "firebaseConfig = {";
-        const startIndex = vertexAiScript.indexOf(startText);
-        if (startIndex === -1) return undefined;
-
-        const endIndex = vertexAiScript.indexOf("}", startIndex + 1);
-        if (endIndex === -1) return undefined;
-
-        try {
-            const fetched = vertexAiScript
-                .substring(startIndex + startText.length - 1, endIndex + 1)
-                .replace(" ", "")
-                .replaceAll(/(\S*)\: /g, '"$1": ');
-            return JSON.parse(fetched);
-        } catch (e) {
-            return undefined;
-        }
-    }
-
-    function callGemini(text, overrideModel = null) {
-        return new Promise(async (resolve, reject) => {
-            const provider = apiProviderSelect.value;
-            let modelId = overrideModel || modelSelect.value;
-            let finalPrompt = buildFinalPrompt();
-            const maskedText = maskCodeBlocks(text);
-
-            if (provider === 'firebase') {
-                const configRaw = firebaseScriptInput.value.trim();
-                if (!configRaw) {
-                    reject(new Error('설정창에서 Firebase 복사본을 먼저 입력해주세요.'));
-                    return;
-                }
-
-                let configObj;
-                let fbVersion = '12.12.0';
-
-                try {
-                    const versionMatch = configRaw.match(/firebasejs\/([0-9.]+)\/firebase-app\.js/);
-                    if (versionMatch && versionMatch[1]) {
-                        fbVersion = versionMatch[1];
-                    }
-
-                    const match = configRaw.match(/const\s+firebaseConfig\s*=\s*({[\s\S]*?});/);
-                    if (match && match[1]) {
-                        configObj = new Function("return " + match[1])();
-                    } else {
-                        const fallbackMatch = configRaw.match(/({[\s\S]*?apiKey[\s\S]*?appId[\s\S]*?})/);
-                        if (fallbackMatch && fallbackMatch[1]) {
-                            configObj = new Function("return " + fallbackMatch[1])();
-                        } else {
-                            throw new Error("형식 오류");
-                        }
-                    }
-                } catch (e) {
-                    reject(new Error("Firebase 코드를 해독하지 못했습니다. 파이어베이스 홈페이지에서 준 <script> 태그 포함된 코드를 그대로 넣어주세요."));
-                    return;
-                }
-
-                try {
-                    const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
-                    const majorVersion = parseInt(fbVersion.split('.')[0]);
-
-                    const aiUrl = majorVersion >= 12
-                        ? `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-ai.js`
-                        : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
-
-                    const { initializeApp, getApps, getApp } = await import(appUrl);
-
-                    let ai;
-                    let generativeModel;
-
-                    if (majorVersion >= 12) {
-                        const { HarmBlockThreshold, HarmCategory, getAI, getGenerativeModel, VertexAIBackend } = await import(aiUrl);
-                        const apps = getApps();
-                        const app = apps.length === 0 ? initializeApp(configObj) : getApp();
-
-                        ai = getAI(app, { backend: new VertexAIBackend('global') });
-
-                        const safetySettings = [
-                            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF }
-                        ];
-
-                        generativeModel = getGenerativeModel(ai, {
-                            model: modelId,
-                            safetySettings,
-                            systemInstruction: { parts: [{ text: finalPrompt }] }
-                        });
-                    } else {
-                        const { HarmBlockThreshold, HarmCategory, getVertexAI, getGenerativeModel } = await import(aiUrl);
-                        const apps = getApps();
-                        const app = apps.length === 0 ? initializeApp(configObj) : getApp();
-
-                        ai = getVertexAI(app);
-
-                        const safetySettings = [
-                            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
-                            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF }
-                        ];
-
-                        generativeModel = getGenerativeModel(ai, {
-                            model: modelId,
-                            safetySettings,
-                            systemInstruction: { parts: [{ text: finalPrompt }] }
-                        });
-                    }
-
-                    const result = await generativeModel.generateContent(maskedText);
-                    const rawResult = result.response.text();
-
-                    const cleaned  = stripOuterFence(rawResult);
-                    const restored = unmaskCodeBlocks(cleaned);
-                    resolve(restored);
-                } catch (e) {
-                    reject(new Error('Firebase Vertex 통신 실패: ' + e.message));
-                }
-                return;
-            }
-
-            // 💡 기본 Google API 로직
-            const apiKey = apiKeyInput.value.trim();
-            if (!apiKey) { reject(new Error('API 키가 설정되지 않았습니다.')); return; }
-
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-                headers: { 'Content-Type': 'application/json' },
-                data: JSON.stringify({
-                    system_instruction: { parts: [{ text: finalPrompt }] },
-                    contents: [{ parts: [{ text: maskedText }] }],
-                    generationConfig: { temperature: 0.7 },
-                }),
-                onload(res) {
-                    try {
-                        const data = JSON.parse(res.responseText);
-                        if (data.error) { reject(new Error(data.error.message)); return; }
-                        const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-                        const cleaned  = stripOuterFence(raw);
-                        const restored = unmaskCodeBlocks(cleaned);
-                        resolve(restored);
-                    } catch (e) { reject(e); }
-                },
-                onerror() { reject(new Error('네트워크 오류가 발생했습니다.')); },
-            });
-        });
-    }
-
-    async function fetchLatestBotMessage(chatId) {
-        const res = await fetch(`${API_BASE}/v3/chats/${chatId}/messages?limit=10`, { headers: buildHeaders(), credentials: 'include' });
-        if (!res.ok) throw new Error(`메시지 조회 실패 (${res.status})`);
-        const json = await res.json();
-        const msgs = (json.data ?? json).messages ?? [];
-        const bot = msgs.find(m => m.role === 'assistant');
-        if (!bot) throw new Error('최신 AI 메시지를 찾을 수 없습니다.');
-        return { id: bot._id ?? bot.id, content: bot.content ?? '' };
-    }
-
-    async function patchMessage(chatId, messageId, content) {
-        const res = await fetch(`${API_BASE}/v3/chats/${chatId}/messages/${messageId}`, {
-            method: 'PATCH', headers: buildHeaders(), credentials: 'include', body: JSON.stringify({ message: content })
-        });
-        if (!res.ok) throw new Error(`메시지 수정 실패 (${res.status})`);
-        return res.json();
-    }
-
-    // =============================================
-    //  모달 상태 및 변수 관리
-    // =============================================
-    let transHistory = [];
-    let transIndex = -1;
-    let activeOriginalText = "";
-    let activeChatId = "";
-    let activeMsgId = "";
-    let transIsFullMode = false;
-
-    const updateModalState = () => {
-        if (transHistory.length === 0) return;
-        resultContent.value = transHistory[transIndex];
-        historyCount.innerText = `${transIndex + 1} / ${transHistory.length}`;
-        prevBtn.disabled = transIndex === 0;
-        nextBtn.disabled = transIndex === transHistory.length - 1;
-    };
-
-    const closeResultModal = () => {
-        overlay.style.display = 'none'; resultModal.style.display = 'none'; panel.style.display = 'none';
-        clearStatus();
-    };
-    closeModalBtn.addEventListener('click', closeResultModal);
-    overlay.addEventListener('click', closeResultModal);
-
-    prevBtn.addEventListener('click', () => { if (transIndex > 0) { transIndex--; updateModalState(); } });
-    nextBtn.addEventListener('click', () => { if (transIndex < transHistory.length - 1) { transIndex++; updateModalState(); } });
-
-    rerollBtn.addEventListener('click', async () => {
-        try {
-            rerollBtn.innerText = '재생성 중... ⏳'; rerollBtn.disabled = true;
-            const newTranslated = await callGemini(activeOriginalText, modalModelSelect.value);
-            transHistory.push(newTranslated);
-            transIndex = transHistory.length - 1;
-            updateModalState();
-        } catch(e) { alert(e.message); }
-        finally { rerollBtn.innerText = '다시 돌리기'; rerollBtn.disabled = false; }
+    apiProviderSelect.addEventListener('change', toggleProviderUI);
+    modelSelect.addEventListener('change', () => {
+      saveThinkVal(thinkContainer.getAttribute('data-current-model'));
+      updateThinkingUI();
     });
+    instantApplyInput.addEventListener('change', saveCurrentSettings);
 
-    patchModalBtn.addEventListener('click', async () => {
-        if (transHistory.length === 0) return;
-        try {
-            patchModalBtn.innerText = '교체 중... ⏳'; patchModalBtn.disabled = true;
-
-            // textarea에서 수정한 내용을 가져와서 반영
-            const currentTranslatedText = resultContent.value;
-            transHistory[transIndex] = currentTranslatedText;
-
-            const { id: msgId, content: original } = await fetchLatestBotMessage(activeChatId);
-
-            let newContent = "";
-            if (transIsFullMode) {
-                newContent = currentTranslatedText;
-            } else {
-                if (!original.includes(activeOriginalText)) {
-                    throw new Error("선택한 원문이 최신 답변에 없습니다. 이미 교체되었을 수 있습니다.");
-                }
-                newContent = original.replace(activeOriginalText, currentTranslatedText);
-            }
-
-            await patchMessage(activeChatId, msgId, newContent);
-
-            patchModalBtn.innerText = '교체 완료! ✔️ (새로고침 해주세요)';
-            setTimeout(() => { closeResultModal(); patchModalBtn.disabled = false; patchModalBtn.innerText = '이 결과로 교체하기'; }, 2000);
-        } catch (e) {
-            alert(e.message);
-            patchModalBtn.innerText = '이 결과로 교체하기'; patchModalBtn.disabled = false;
-        }
-    });
-
-    // =============================================
-    //  자동 번역 메인 로직
-    // =============================================
-    async function autoTranslate() {
-        const ids = parsePath();
-        if (!ids) { showToast('채팅방 페이지에서만 사용 가능합니다.'); return; }
-
-        saveCurrentSettings();
-
-        const provider = apiProviderSelect.value;
-        if (provider === 'google' && !apiKeyInput.value.trim()) {
-            setStatus('API 키가 설정되지 않았습니다. 위 항목에서 입력 후 저장해주세요.', 'err');
-            return;
-        }
-
-        translateBtn.disabled = true;
-        clearStatus();
-
-        try {
-            setStatus('① 최신 AI 메시지 탐색 중…', 'info');
-            const { id: msgId, content: original } = await fetchLatestBotMessage(ids.chatId);
-
-            if (!original.trim()) {
-                setStatus('번역할 내용이 없습니다.', 'err'); translateBtn.disabled = false; return;
-            }
-
-            activeOriginalText = original;
-            activeChatId = ids.chatId;
-            activeMsgId = msgId;
-            transIsFullMode = true;
-
-            const usePreview = previewToggle.checked;
-
-            if (usePreview) {
-                setStatus('② 번역 중… (팝업 대기 중)', 'info');
-                const translated = await callGemini(original);
-
-                transHistory = [translated];
-                transIndex = 0;
-                modalModelSelect.value = modelSelect.value;
-
-                panel.style.display = 'none';
-                overlay.style.display = 'block'; resultModal.style.display = 'flex';
-                updateModalState();
-
-            } else {
-                setStatus('② 번역 중… (잠시 기다려 주세요)', 'info');
-                const translated = await callGemini(original);
-                setStatus('③ 번역본 자동 삽입 중…', 'info');
-                await patchMessage(ids.chatId, msgId, translated);
-                setStatus('✅ 번역 교체 완료! 페이지를 새로고침하면 반영됩니다.', 'ok');
-            }
-        } catch (err) {
-            setStatus(`❌ ${err.message}`, 'err');
-            console.error('[초월 번역기]', err);
-        } finally {
-            translateBtn.disabled = false;
-        }
-    }
-
-    function syncTranslateBtn() {
-        translateBtn.style.display = isChattingPage() ? 'inline-block' : 'none';
-    }
-
-    settingBtn.addEventListener('click', (e) => {
-        if (dragMoved) { e.preventDefault(); e.stopPropagation(); return; }
-        const isOpen = panel.style.display === 'block';
-        panel.style.display = isOpen ? 'none' : 'block';
-        if (!isOpen) clearStatus();
+    saveBtn.addEventListener('click', () => {
+      saveCurrentSettings();
+      const originalText = saveBtn.textContent;
+      saveBtn.textContent = '✓ 저장 완료';
+      showNudge('설정을 저장했습니다.', 'ok');
+      setTimeout(() => {
+        saveBtn.textContent = originalText;
+      }, 1200);
     });
 
     resetBtn.addEventListener('click', () => {
-        if (confirm('지침서를 기본값으로 초기화할까요?'))
-            customPromptInput.value = baseSystemPrompt;
+      if (confirm('지침서를 기본값으로 초기화할까요?')) {
+        customPromptInput.value = baseSystemPrompt;
+      }
     });
 
-    saveBtn.addEventListener('click', () => {
+    closeSettingsBtn.addEventListener('click', () => {
+      document.getElementById('trans-setting-panel').style.display = 'none';
+    });
+
+    closeModalBtn.addEventListener('click', closeResultModal);
+    document.getElementById('trans-result-overlay').addEventListener('click', closeResultModal);
+
+    prevBtn.addEventListener('click', () => {
+      if (transIndex > 0) {
+        transIndex -= 1;
+        renderModalState();
+      }
+    });
+
+    nextBtn.addEventListener('click', () => {
+      if (transIndex < transHistory.length - 1) {
+        transIndex += 1;
+        renderModalState();
+      }
+    });
+
+    rerollBtn.addEventListener('click', async () => {
+      try {
+        rerollBtn.textContent = '생성 중...';
+        rerollBtn.disabled = true;
         saveCurrentSettings();
-        saveBtn.textContent = '저장 완료!';
-        setTimeout(() => { saveBtn.textContent = '저장하기'; }, 1200);
+        showNudge('다시 번역 중...', 'info', true);
+
+        const resultObj = await callGemini(activeOriginalText, modalModelSelect.value);
+        transHistory.push(resultObj.text);
+        transUsageHistory.push({ usage: resultObj.usage, model: resultObj.model });
+        transIndex = transHistory.length - 1;
+        renderModalState();
+        showNudge('재번역이 완료되었습니다.', 'ok');
+      } catch (e) {
+        showNudge(e.message, 'err');
+        alert(e.message);
+      } finally {
+        rerollBtn.textContent = '↻ 다시 돌리기';
+        rerollBtn.disabled = false;
+      }
     });
 
-    translateBtn.addEventListener('click', autoTranslate);
+    patchModalBtn.addEventListener('click', async () => {
+      if (transHistory.length === 0) return;
 
-    // =============================================
-    //  드래그 번역 로직
-    // =============================================
-    let tooltip = null;
-    const handleTextSelection = (event) => {
-        if (panel.contains(event.target) || settingBtn.contains(event.target) || resultModal.contains(event.target)) return;
-        if (tooltip && tooltip.contains(event.target)) return;
+      try {
+        patchModalBtn.textContent = '교체 중...';
+        patchModalBtn.disabled = true;
+        showNudge('번역문을 교체 중...', 'info', true);
 
+        const currentTranslatedText = resultContent.value;
+        transHistory[transIndex] = currentTranslatedText;
+
+        const { content: original } = await fetchLatestBotMessage(activeChatId);
+        let newContent = currentTranslatedText;
+        if (activeOriginalText !== original) {
+          if (!original.includes(activeOriginalText)) {
+            throw new Error('선택한 원문을 최신 답변에서 찾을 수 없습니다.');
+          }
+          newContent = original.replace(activeOriginalText, currentTranslatedText);
+        }
+
+        await patchMessage(activeChatId, activeMsgId, newContent);
+        patchModalBtn.textContent = '✓ 완료! (새로고침 하세요)';
+        showNudge('교체 완료! 새로고침하면 반영됩니다.', 'ok');
         setTimeout(() => {
-            const selectedText = window.getSelection().toString().trim();
-            if (!selectedText) { if (tooltip) { tooltip.remove(); tooltip = null; } return; }
-            if (tooltip) tooltip.remove();
+          closeResultModal();
+          patchModalBtn.disabled = false;
+          patchModalBtn.textContent = '이 결과로 교체하기';
+        }, 1600);
+      } catch (e) {
+        showNudge(e.message, 'err');
+        alert(e.message);
+        patchModalBtn.textContent = '이 결과로 교체하기';
+        patchModalBtn.disabled = false;
+      }
+    });
 
-            tooltip = document.createElement('div'); tooltip.className = 'trans-tooltip';
-            const actionBtn = document.createElement('button'); actionBtn.className = 'trans-action-btn'; actionBtn.innerText = '✨ 번역하기';
+    directApplyBtn.addEventListener('click', async () => {
+      const chatId = parsePath();
+      if (!chatId) {
+        alert('채팅방에서만 사용 가능합니다.');
+        return;
+      }
 
-            actionBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                saveCurrentSettings();
+      saveCurrentSettings();
+      directApplyBtn.disabled = true;
+      statusBox.className = 'info active';
+      statusBox.textContent = '메시지 탐색 및 번역 중...';
+      showNudge('최신 답변 번역 중...', 'info', true);
 
-                tooltip.innerText = "번역 중... ⏳";
-                try {
-                    activeOriginalText = selectedText;
-                    transIsFullMode = false;
-                    activeChatId = parsePath();
+      try {
+        const { id: msgId, content: original } = await fetchLatestBotMessage(chatId);
+        if (!original.trim()) throw new Error('번역할 내용이 없습니다.');
 
-                    if (!activeChatId) throw new Error("채팅방 안에서만 교체할 수 있습니다.");
+        const resultObj = await callGemini(original);
+        await patchMessage(chatId, msgId, resultObj.text);
 
-                    const translated = await callGemini(selectedText);
-                    const usePreview = previewToggle.checked;
+        const costMsg = formatCostForMessage(resultObj.usage, resultObj.model);
+        statusBox.className = 'ok active';
+        statusBox.textContent = '번역 교체 완료! 새로고침 하세요.' + costMsg;
+        showNudge('번역 교체 완료! 새로고침 하세요.' + costMsg, 'ok');
+      } catch (e) {
+        statusBox.className = 'err active';
+        statusBox.textContent = e.message;
+        showNudge(e.message, 'err');
+      } finally {
+        directApplyBtn.disabled = false;
+      }
+    });
 
-                    if (usePreview) {
-                        transHistory = [translated];
-                        transIndex = 0;
-                        modalModelSelect.value = modelSelect.value;
+    toggleProviderUI();
+    updateThinkingUI();
+  }
 
-                        tooltip.remove(); tooltip = null;
-                        overlay.style.display = 'block'; resultModal.style.display = 'flex';
-                        updateModalState();
-                    } else {
-                        tooltip.innerText = "덮어쓰는 중... ⏳";
+  function renderModalState() {
+    if (transHistory.length === 0) return;
 
-                        const { id: msgId, content: original } = await fetchLatestBotMessage(activeChatId);
-                        if (!original.includes(activeOriginalText)) {
-                            throw new Error("선택한 원문이 최신 답변에 없습니다.");
-                        }
-                        const newContent = original.replace(activeOriginalText, translated);
-                        await patchMessage(activeChatId, msgId, newContent);
+    const resultContent = document.getElementById('trans-result-content');
+    const costInfo = document.getElementById('trans-cost-info');
+    const historyCount = document.getElementById('trans-history-count');
+    const prevBtn = document.getElementById('trans-prev-btn');
+    const nextBtn = document.getElementById('trans-next-btn');
 
-                        tooltip.innerText = "교체 완료! ✔️ (새로고침 해주세요)";
-                        setTimeout(() => { if (tooltip) { tooltip.remove(); tooltip = null; } }, 2000);
-                    }
-                } catch (err) {
-                    tooltip.innerText = `실패: ${err.message}`;
-                }
-            });
-            tooltip.appendChild(actionBtn); document.body.appendChild(tooltip);
-        }, 100);
+    resultContent.value = transHistory[transIndex];
+
+    let costText = '';
+    const usageData = transUsageHistory[transIndex];
+    if (usageData && usageData.usage) {
+      const costData = calculateCost(usageData.usage, 1500, usageData.model);
+      if (costData) {
+        costText = `약 ₩${costData.krw.toFixed(2)} · 입력 ${costData.tokens.write} / 캐시 ${costData.tokens.read} / 출력 ${costData.tokens.output} / 추론 ${costData.tokens.thoughts}`;
+      }
+    }
+
+    costInfo.textContent = costText;
+    historyCount.textContent = `${transIndex + 1} / ${transHistory.length}`;
+    prevBtn.disabled = transIndex === 0;
+    nextBtn.disabled = transIndex === transHistory.length - 1;
+  }
+
+  function closeResultModal() {
+    document.getElementById('trans-result-overlay').style.display = 'none';
+    document.getElementById('trans-result-modal').style.display = 'none';
+  }
+
+  function showNudge(message, type = 'info', persist = false) {
+    const nudge = document.getElementById('trans-nudge');
+    if (!nudge) return;
+
+    clearTimeout(nudgeTimer);
+    nudge.textContent = message;
+    nudge.className = `${type} active ${detectSiteTheme() === 'dark' ? 'trans-theme-dark' : 'trans-theme-light'}`;
+
+    if (!persist) {
+      nudgeTimer = setTimeout(() => {
+        nudge.classList.remove('active');
+      }, 3200);
+    }
+  }
+
+  function formatCostForMessage(usage, model) {
+    const c = calculateCost(usage, 1500, model);
+    return c ? ` (약 ₩${c.krw.toFixed(2)} 소모)` : '';
+  }
+
+  function parsePath() {
+    const m = location.pathname.match(/\/stories\/([^/]+)\/episodes\/([^/]+)/);
+    return m ? m[2] : null;
+  }
+
+  function buildHeaders() {
+    const cookies = document.cookie.split(';').map(c => c.trim());
+    const token = cookies.find(c => c.startsWith('access_token='))?.slice('access_token='.length) || '';
+    const wrtnId = cookies.find(c => c.startsWith('__w_id='))?.slice('__w_id='.length) || '';
+    const headers = {
+      'Content-Type': 'application/json',
+      platform: 'web',
+      'wrtn-locale': 'ko-KR',
     };
 
-    document.addEventListener('mouseup', handleTextSelection); document.addEventListener('touchend', handleTextSelection);
-    const closeTooltip = (event) => { if (tooltip && !tooltip.contains(event.target) && window.getSelection().toString().trim() === '') { tooltip.remove(); tooltip = null; } };
-    document.addEventListener('mousedown', closeTooltip); document.addEventListener('touchstart', closeTooltip);
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (wrtnId) headers['x-wrtn-id'] = wrtnId;
+    return headers;
+  }
 
-    syncTranslateBtn();
-    let _lastUrl = location.href;
-    new MutationObserver(() => {
-        if (location.href !== _lastUrl) { _lastUrl = location.href; setTimeout(syncTranslateBtn, 800); }
-    }).observe(document, { subtree: true, childList: true });
+  function maskCodeBlocks(text) {
+    return text.replace(CODE_BLOCK_RE, (_, inner) => `${FENCE_OPEN_SUB}${inner}${FENCE_CLOSE_SUB}`);
+  }
 
+  function unmaskCodeBlocks(text) {
+    return text.split(FENCE_OPEN_SUB).join('```').split(FENCE_CLOSE_SUB).join('```');
+  }
+
+  function stripOuterFence(text) {
+    return text.replace(/^```[^\n]*\n([\s\S]*?)\n```\s*$/m, '$1').trim();
+  }
+
+  function buildGenerationConfig(modelId) {
+    const genConfig = { temperature: 0.7 };
+
+    if (modelId.includes('gemini-3')) {
+      delete genConfig.temperature;
+      let level = thinkingLevels[modelId] || 'medium';
+      if (modelId.includes('pro') && level === 'minimal') level = 'low';
+      genConfig.thinkingConfig = { thinkingLevel: level };
+    } else if (modelId.includes('gemini-2.5')) {
+      let budget = thinkingBudgets[modelId] || 1024;
+      if (budget < 128) budget = 128;
+      genConfig.thinkingConfig = { thinkingBudget: budget };
+    }
+
+    return genConfig;
+  }
+
+  function getPrompt() {
+    let finalPrompt = document.getElementById('trans-custom-prompt').value;
+    if (document.getElementById('trans-mode-select').value === 'en') {
+      finalPrompt += '\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.';
+    }
+    return finalPrompt;
+  }
+
+  function callGemini(text, overrideModel = null) {
+    return new Promise(async (resolve, reject) => {
+      const provider = document.getElementById('trans-api-provider').value;
+      const modelId = overrideModel || document.getElementById('trans-model-select').value;
+      const finalPrompt = getPrompt();
+      const maskedText = maskCodeBlocks(text);
+      const generationConfig = buildGenerationConfig(modelId);
+
+      if (provider === 'firebase') {
+        try {
+          const result = await callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig);
+          resolve(result);
+        } catch (e) {
+          reject(e);
+        }
+        return;
+      }
+
+      const apiKey = document.getElementById('trans-api-key').value.trim();
+      if (!apiKey) {
+        reject(new Error('API 키가 설정되지 않았습니다.'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({
+          system_instruction: { parts: [{ text: finalPrompt }] },
+          contents: [{ parts: [{ text: maskedText }] }],
+          generationConfig,
+        }),
+        onload(res) {
+          try {
+            const data = JSON.parse(res.responseText);
+            if (data.error) {
+              reject(new Error(data.error.message));
+              return;
+            }
+
+            const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const usage = data.usageMetadata || {};
+            const restored = unmaskCodeBlocks(stripOuterFence(raw));
+            resolve({ text: restored, usage, model: modelId });
+          } catch (e) {
+            reject(e);
+          }
+        },
+        onerror() {
+          reject(new Error('네트워크 오류가 발생했습니다.'));
+        },
+      });
+    });
+  }
+
+  async function callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig) {
+    const configRaw = document.getElementById('trans-firebase-script').value.trim();
+    if (!configRaw) {
+      throw new Error('설정창에서 Firebase 복사본을 먼저 입력해주세요.');
+    }
+
+    const { configObj, fbVersion } = parseFirebaseConfig(configRaw);
+    const appUrl = `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-app.js`;
+    const majorVersion = parseInt(fbVersion.split('.')[0], 10);
+    const aiUrl = majorVersion >= 12
+      ? `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-ai.js`
+      : `https://www.gstatic.com/firebasejs/${fbVersion}/firebase-vertexai.js`;
+
+    try {
+      const { initializeApp, getApps, getApp } = await import(appUrl);
+      const app = getOrCreateFirebaseApp({ initializeApp, getApps, getApp }, configObj);
+
+      let generativeModel;
+      if (majorVersion >= 12) {
+        const {
+          HarmBlockThreshold,
+          HarmCategory,
+          VertexAIBackend,
+          getAI,
+          getGenerativeModel,
+        } = await import(aiUrl);
+
+        const ai = getAI(app, { backend: new VertexAIBackend(FIREBASE_LOCATION) });
+        generativeModel = getGenerativeModel(ai, {
+          model: modelId,
+          safetySettings: buildSafetySettings(HarmCategory, HarmBlockThreshold),
+          systemInstruction: { parts: [{ text: finalPrompt }] },
+          generationConfig,
+        });
+      } else {
+        const {
+          HarmBlockThreshold,
+          HarmCategory,
+          getVertexAI,
+          getGenerativeModel,
+        } = await import(aiUrl);
+
+        const vertexAI = getVertexAI(app, { location: FIREBASE_LOCATION });
+        generativeModel = getGenerativeModel(vertexAI, {
+          model: modelId,
+          safetySettings: buildSafetySettings(HarmCategory, HarmBlockThreshold),
+          systemInstruction: { parts: [{ text: finalPrompt }] },
+          generationConfig,
+        });
+      }
+
+      const result = await generativeModel.generateContent(maskedText);
+      const rawResult = result.response.text();
+      const usage = result.response.usageMetadata || {};
+      const restored = unmaskCodeBlocks(stripOuterFence(rawResult));
+      return { text: restored, usage, model: modelId };
+    } catch (e) {
+      throw new Error(`Firebase Vertex 통신 실패: ${e.message}`);
+    }
+  }
+
+  function parseFirebaseConfig(configRaw) {
+    let fbVersion = '12.12.0';
+    const versionMatch = configRaw.match(/firebasejs\/([0-9.]+)\/firebase-app\.js/);
+    if (versionMatch?.[1]) fbVersion = versionMatch[1];
+
+    try {
+      const configMatch = configRaw.match(/(?:const|let|var)\s+firebaseConfig\s*=\s*({[\s\S]*?});/);
+      if (configMatch?.[1]) {
+        return { configObj: new Function(`return (${configMatch[1]});`)(), fbVersion };
+      }
+
+      const fallbackMatch = configRaw.match(/({[\s\S]*?apiKey[\s\S]*?appId[\s\S]*?})/);
+      if (fallbackMatch?.[1]) {
+        return { configObj: new Function(`return (${fallbackMatch[1]});`)(), fbVersion };
+      }
+    } catch (e) {
+      throw new Error('Firebase 코드를 해독하지 못했습니다. 파이어베이스 홈페이지의 코드를 그대로 넣어주세요.');
+    }
+
+    throw new Error('Firebase 코드를 해독하지 못했습니다. 파이어베이스 홈페이지의 코드를 그대로 넣어주세요.');
+  }
+
+  function getOrCreateFirebaseApp(firebaseAppModule, configObj) {
+    const { initializeApp, getApps, getApp } = firebaseAppModule;
+    const existing = getApps().find(app => app.name === FIREBASE_APP_NAME);
+    if (existing) return getApp(FIREBASE_APP_NAME);
+    return initializeApp(configObj, FIREBASE_APP_NAME);
+  }
+
+  function buildSafetySettings(HarmCategory, HarmBlockThreshold) {
+    return [
+      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
+      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
+      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
+      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
+    ];
+  }
+
+  async function fetchLatestBotMessage(chatId) {
+    const res = await fetch(`${API_BASE}/v3/chats/${chatId}/messages?limit=20`, {
+      headers: buildHeaders(),
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`메시지 조회 실패 (${res.status})`);
+
+    const json = await res.json();
+    const msgs = (json.data ?? json).messages ?? [];
+    const bot = msgs.find(m => m.role === 'assistant');
+    if (!bot) throw new Error('최신 AI 메시지를 찾을 수 없습니다.');
+    return { id: bot._id ?? bot.id, content: bot.content ?? '', allMsgs: msgs };
+  }
+
+  async function patchMessage(chatId, messageId, content) {
+    const res = await fetch(`${API_BASE}/v3/chats/${chatId}/messages/${messageId}`, {
+      method: 'PATCH',
+      headers: buildHeaders(),
+      credentials: 'include',
+      body: JSON.stringify({ message: content }),
+    });
+    if (!res.ok) throw new Error(`메시지 수정 실패 (${res.status})`);
+    return res.json();
+  }
+
+  function injectSidebar() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.textContent.includes('키보드 단축키')) continue;
+
+      const container = node.parentElement?.closest('.px-2\\.5');
+      if (container && !document.getElementById('trans-menu-btn')) {
+        const btn = document.createElement('div');
+        btn.id = 'trans-menu-btn';
+        btn.className = 'px-2.5 h-4 box-content py-[18px]';
+        btn.style.cursor = 'pointer';
+        btn.innerHTML = '<span class="flex space-x-2 items-center"><span style="font-size:16px;">✨</span><span style="font-size:14px;">초월 번역 설정</span></span>';
+        btn.onclick = () => {
+          document.getElementById('trans-setting-panel').style.display = 'block';
+          syncTranslatorTheme();
+        };
+        container.parentNode.insertBefore(btn, container.nextSibling);
+      }
+    }
+  }
+
+  async function executeBubbleTranslation(textToTranslate, fallbackMsgId) {
+    const chatId = parsePath();
+    if (!chatId) {
+      alert('채팅방 페이지에서만 사용 가능합니다.');
+      return;
+    }
+
+    const instantApply = document.getElementById('trans-instant-apply')?.checked || GM_getValue('instantApply', false);
+    if (instantApply) {
+      await executeInstantBubbleTranslation(textToTranslate, fallbackMsgId, chatId);
+      return;
+    }
+
+    document.getElementById('trans-modal-model').value = document.getElementById('trans-model-select').value;
+    showNudge('번역 중...', 'info', true);
+
+    try {
+      activeOriginalText = textToTranslate;
+      activeChatId = chatId;
+
+      const { allMsgs, id: latestMsgId } = await fetchLatestBotMessage(chatId);
+      const matchedMsg = allMsgs.find(m => m.content && m.content.includes(textToTranslate));
+      activeMsgId = matchedMsg ? (matchedMsg._id || matchedMsg.id) : (fallbackMsgId || latestMsgId);
+
+      const resultObj = await callGemini(textToTranslate);
+      transHistory = [resultObj.text];
+      transUsageHistory = [{ usage: resultObj.usage, model: resultObj.model }];
+      transIndex = 0;
+
+      document.getElementById('trans-result-overlay').style.display = 'block';
+      document.getElementById('trans-result-modal').style.display = 'flex';
+      renderModalState();
+      syncTranslatorTheme();
+      showNudge('번역 완료. 팝업에서 확인하세요.', 'ok');
+    } catch (err) {
+      showNudge(`번역 실패: ${err.message}`, 'err');
+      alert(`번역 실패: ${err.message}`);
+    }
+  }
+
+  async function executeInstantBubbleTranslation(textToTranslate, fallbackMsgId, chatId) {
+    showNudge('번역 중... 완료되면 바로 교체합니다.', 'info', true);
+
+    try {
+      const { allMsgs, id: latestMsgId, content: latestContent } = await fetchLatestBotMessage(chatId);
+      const matchedMsg = allMsgs.find(m => m.content && m.content.includes(textToTranslate));
+      const targetMsgId = matchedMsg ? (matchedMsg._id || matchedMsg.id) : (fallbackMsgId || latestMsgId);
+      const originalContent = matchedMsg?.content || latestContent;
+      if (!textToTranslate.trim()) throw new Error('번역할 내용이 없습니다.');
+
+      const resultObj = await callGemini(textToTranslate);
+      const newContent = originalContent.includes(textToTranslate)
+        ? originalContent.replace(textToTranslate, resultObj.text)
+        : resultObj.text;
+
+      await patchMessage(chatId, targetMsgId, newContent);
+      showNudge(`번역 교체 완료! 새로고침 하세요.${formatCostForMessage(resultObj.usage, resultObj.model)}`, 'ok');
+    } catch (err) {
+      showNudge(`번역 실패: ${err.message}`, 'err');
+      alert(`번역 실패: ${err.message}`);
+    }
+  }
+
+  function injectBubbleButtons() {
+    const groups = document.querySelectorAll('.flex.flex-row.gap-2.items-center:not(.trans-injected)');
+    groups.forEach(group => {
+      if (!group.querySelector('button[aria-label="메시지 옵션"]')) return;
+
+      const btn = document.createElement('button');
+      btn.className = 'trans-bubble-btn relative inline-flex items-center justify-center overflow-hidden rounded-full transition-colors size-7 bg-transparent hover:bg-accent';
+      btn.type = 'button';
+      btn.innerHTML = '✨';
+      btn.style.marginRight = '4px';
+      btn.style.fontSize = '14px';
+      btn.title = '초월 번역';
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const messageBlock = e.currentTarget.closest('.w-full[data-message-group-id]');
+        let text = '';
+        let msgId = '';
+
+        if (messageBlock) {
+          const md = messageBlock.querySelector('.wrtn-markdown');
+          if (md) text = md.innerText;
+          msgId = messageBlock.getAttribute('data-message-group-id') || '';
+        }
+
+        if (!text) {
+          alert('텍스트를 찾을 수 없습니다.');
+          return;
+        }
+
+        executeBubbleTranslation(text, msgId);
+      };
+      group.insertBefore(btn, group.firstChild);
+      group.classList.add('trans-injected');
+    });
+  }
+
+  function detectSiteTheme() {
+    const htmlAndBody = `${document.documentElement.className} ${document.body.className} ${document.documentElement.dataset.theme || ''} ${document.body.dataset.theme || ''}`.toLowerCase();
+    if (/\b(light|theme-light)\b/.test(htmlAndBody)) return 'light';
+    if (/\b(dark|theme-dark)\b/.test(htmlAndBody)) return 'dark';
+
+    const bg = getComputedStyle(document.body).backgroundColor || getComputedStyle(document.documentElement).backgroundColor;
+    const match = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+      const r = Number(match[1]);
+      const g = Number(match[2]);
+      const b = Number(match[3]);
+      const luminance = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+      return luminance < 128 ? 'dark' : 'light';
+    }
+
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function syncTranslatorTheme() {
+    const theme = detectSiteTheme();
+    const targets = [
+      document.getElementById('trans-setting-panel'),
+      document.getElementById('trans-result-modal'),
+      document.getElementById('trans-result-overlay'),
+      document.getElementById('trans-nudge'),
+    ].filter(Boolean);
+
+    targets.forEach(el => {
+      el.classList.toggle('trans-theme-dark', theme === 'dark');
+      el.classList.toggle('trans-theme-light', theme !== 'dark');
+    });
+  }
+
+  addStyles();
+  createUI();
+
+  const observer = new MutationObserver(() => {
+    injectSidebar();
+    injectBubbleButtons();
+    syncTranslatorTheme();
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-theme'] });
+  injectSidebar();
+  injectBubbleButtons();
 })();
