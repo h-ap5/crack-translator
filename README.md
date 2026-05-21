@@ -6,6 +6,23 @@ https://github.com/h-ap5/crack-translator/raw/refs/heads/main/crack-translator.u
 
 ## 업데이트 내역
 
+### V3.0
+- Firebase API가 3.1 gemini 모델과 호환이 가능하게 변경했습니다.
+- 번역 한 번 당 금액, 입/출력 토큰, 추론 토큰을 표기했습니다.
+<img width="812" height="673" alt="image" src="https://github.com/user-attachments/assets/b41bff2f-de04-4f5b-b5ba-271c9ecb4136" />
+
+
+- 추론 레벨이 조절 가능해졌습니다.
+<img width="367" height="209" alt="image" src="https://github.com/user-attachments/assets/2b09d4f7-8cde-47e6-bbf4-dc5d4ed6fa36" />
+
+
+- 개밤티UI를 바꾸었습니다.
+- 설정창을 사이드바로 밀어넣었습니다.
+<img width="251" height="443" alt="image" src="https://github.com/user-attachments/assets/e11ca40f-e47e-40ac-8c3c-58ffd6818a6d" />
+
+
+- 리롤 버튼 옆에 번역 버튼을 넣었습니다. 즉시 번역하고 싶은 해당 메시지의 ✨를 누르면 번역이 완료됩니다.
+
 ### v2.8
 - 결과창을 직접 수정할 수 있게 변경했습니다.
 - 2.5Pro 모델을 추가했습니다.
