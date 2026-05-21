@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         크랙 초월 번역기 V3
+// @name         크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  최신 AI 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
+// @version      3.1
+// @description  최신 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -46,6 +46,7 @@
   let activeMsgId = '';
   let thinkingLevels = GM_getValue('thinkingLevels', {});
   let thinkingBudgets = GM_getValue('thinkingBudgets', {});
+  let replacementSlots = sanitizeReplacementSlots(GM_getValue('replacementSlots', []));
   let nudgeTimer = null;
 
   function normalizeUsage(raw) {
@@ -66,6 +67,16 @@
       cacheReadInputTokens: pick(['cacheReadInputTokens', 'cache_read_input_tokens', 'cachedContentTokenCount', 'cached_content_token_count']),
       thoughtsTokenCount: pick(['thoughtsTokenCount', 'thoughts_token_count', 'thinking_tokens']),
     };
+  }
+
+  function sanitizeReplacementSlots(rawSlots) {
+    if (!Array.isArray(rawSlots)) return [];
+    return rawSlots
+      .map(slot => ({
+        find: String(slot?.find || ''),
+        replace: String(slot?.replace || ''),
+      }))
+      .filter(slot => slot.find);
   }
 
   function calculateCost(usage, exchangeRate = 1500, modelOverride = '') {
@@ -236,6 +247,10 @@
 #trans-model-select,
 #trans-mode-select,
 #trans-custom-prompt,
+#trans-replace-find,
+#trans-replace-with,
+#trans-slot-find,
+#trans-slot-with,
 #g-think-val,
 #trans-modal-model {
   width: 100%;
@@ -315,6 +330,104 @@
   color: var(--t-tx3);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.t-inline-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.t-mini-btn {
+  min-height: 35px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx1);
+  cursor: pointer;
+  font-family: var(--t-font);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.t-mini-btn.primary {
+  background: var(--t-accent);
+  border-color: var(--t-accent);
+  color: #fff;
+}
+
+.t-slot-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.t-slot-empty {
+  color: var(--t-tx3);
+  font-size: 12px;
+  line-height: 28px;
+}
+
+.t-slot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx1);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.t-slot-chip button {
+  border: none;
+  background: transparent;
+  color: var(--t-tx3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.t-replace-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--t-border);
+  border-radius: 10px;
+  background: var(--t-surface);
+}
+
+.t-replace-panel-title {
+  color: var(--t-tx2);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.t-modal-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.t-apply-slot {
+  max-width: 100%;
+  padding: 6px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--t-border);
+  background: var(--t-raised);
+  color: var(--t-tx1);
+  cursor: pointer;
+  font-family: var(--t-font);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .t-btn-row {
@@ -643,6 +756,10 @@
   #trans-patch-modal {
     flex: 1;
   }
+
+  .t-inline-form {
+    grid-template-columns: 1fr;
+  }
 }`;
     document.head.appendChild(style);
   }
@@ -709,6 +826,16 @@
     </div>
   </div>
 
+  <div class="t-section">
+    <div class="t-section-title">키워드 치환 슬롯</div>
+    <div class="t-inline-form">
+      <input id="trans-slot-find" type="text" placeholder="찾을 말">
+      <input id="trans-slot-with" type="text" placeholder="바꿀 말">
+      <button class="t-mini-btn primary" id="trans-add-slot-btn" type="button">추가</button>
+    </div>
+    <div class="t-slot-list" id="trans-slot-list"></div>
+  </div>
+
   <div class="t-btn-row">
     <button class="t-btn t-btn-ghost" id="trans-reset-btn" type="button">↺ 초기화</button>
     <button class="t-btn t-btn-primary" id="trans-save-btn" type="button">저장</button>
@@ -741,6 +868,15 @@
 </div>
 <div class="t-modal-body">
   <textarea id="trans-result-content" placeholder="번역 결과가 여기에 표시됩니다..."></textarea>
+  <div class="t-replace-panel">
+    <div class="t-replace-panel-title">키워드 전체 교체</div>
+    <div class="t-inline-form">
+      <input id="trans-replace-find" type="text" placeholder="찾을 말">
+      <input id="trans-replace-with" type="text" placeholder="바꿀 말">
+      <button class="t-mini-btn primary" id="trans-apply-replace-btn" type="button">전체 교체</button>
+    </div>
+    <div class="t-modal-slots" id="trans-modal-slot-list"></div>
+  </div>
   <div id="trans-cost-info"></div>
 </div>
 <div class="t-modal-footer">
@@ -774,12 +910,18 @@
     const customPromptInput = document.getElementById('trans-custom-prompt');
     const thinkContainer = document.getElementById('trans-thinking-container');
     const instantApplyInput = document.getElementById('trans-instant-apply');
+    const slotFindInput = document.getElementById('trans-slot-find');
+    const slotWithInput = document.getElementById('trans-slot-with');
+    const addSlotBtn = document.getElementById('trans-add-slot-btn');
     const saveBtn = document.getElementById('trans-save-btn');
     const resetBtn = document.getElementById('trans-reset-btn');
     const directApplyBtn = document.getElementById('trans-direct-apply-btn');
     const closeSettingsBtn = document.getElementById('trans-close-settings-btn');
     const statusBox = document.getElementById('trans-status-box');
     const resultContent = document.getElementById('trans-result-content');
+    const replaceFindInput = document.getElementById('trans-replace-find');
+    const replaceWithInput = document.getElementById('trans-replace-with');
+    const applyReplaceBtn = document.getElementById('trans-apply-replace-btn');
     const closeModalBtn = document.getElementById('trans-close-modal');
     const patchModalBtn = document.getElementById('trans-patch-modal');
     const modalModelSelect = document.getElementById('trans-modal-model');
@@ -862,6 +1004,7 @@
       GM_setValue('instantApply', instantApplyInput.checked);
       GM_setValue('thinkingLevels', thinkingLevels);
       GM_setValue('thinkingBudgets', thinkingBudgets);
+      GM_setValue('replacementSlots', replacementSlots);
     };
 
     apiProviderSelect.addEventListener('change', toggleProviderUI);
@@ -870,6 +1013,32 @@
       updateThinkingUI();
     });
     instantApplyInput.addEventListener('change', saveCurrentSettings);
+
+    addSlotBtn.addEventListener('click', () => {
+      const find = slotFindInput.value.trim();
+      const replace = slotWithInput.value.trim();
+      if (!find) {
+        showNudge('찾을 말을 먼저 입력해주세요.', 'err');
+        return;
+      }
+
+      const existing = replacementSlots.find(slot => slot.find === find);
+      if (existing) {
+        existing.replace = replace;
+      } else {
+        replacementSlots.push({ find, replace });
+      }
+
+      GM_setValue('replacementSlots', replacementSlots);
+      slotFindInput.value = '';
+      slotWithInput.value = '';
+      renderReplacementSlots();
+      showNudge(`치환 슬롯 저장: ${find} → ${replace}`, 'ok');
+    });
+
+    applyReplaceBtn.addEventListener('click', () => {
+      applyReplacementToResult(replaceFindInput.value, replaceWithInput.value);
+    });
 
     saveBtn.addEventListener('click', () => {
       saveCurrentSettings();
@@ -1001,6 +1170,7 @@
 
     toggleProviderUI();
     updateThinkingUI();
+    renderReplacementSlots();
   }
 
   function renderModalState() {
@@ -1032,6 +1202,83 @@
   function closeResultModal() {
     document.getElementById('trans-result-overlay').style.display = 'none';
     document.getElementById('trans-result-modal').style.display = 'none';
+  }
+
+  function renderReplacementSlots() {
+    const settingList = document.getElementById('trans-slot-list');
+    const modalList = document.getElementById('trans-modal-slot-list');
+    if (!settingList || !modalList) return;
+
+    settingList.innerHTML = '';
+    modalList.innerHTML = '';
+
+    if (replacementSlots.length === 0) {
+      settingList.innerHTML = '<span class="t-slot-empty">저장된 슬롯이 없습니다.</span>';
+      modalList.innerHTML = '<span class="t-slot-empty">저장된 치환 슬롯 없음</span>';
+      return;
+    }
+
+    replacementSlots.forEach((slot, index) => {
+      const settingChip = document.createElement('span');
+      settingChip.className = 't-slot-chip';
+      settingChip.title = `${slot.find} → ${slot.replace}`;
+      settingChip.appendChild(document.createTextNode(`${slot.find} → ${slot.replace}`));
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.textContent = '✕';
+      deleteBtn.title = '삭제';
+      deleteBtn.addEventListener('click', () => {
+        replacementSlots.splice(index, 1);
+        GM_setValue('replacementSlots', replacementSlots);
+        renderReplacementSlots();
+        showNudge('치환 슬롯을 삭제했습니다.', 'ok');
+      });
+      settingChip.appendChild(deleteBtn);
+      settingList.appendChild(settingChip);
+
+      const modalBtn = document.createElement('button');
+      modalBtn.type = 'button';
+      modalBtn.className = 't-apply-slot';
+      modalBtn.textContent = `${slot.find} → ${slot.replace}`;
+      modalBtn.title = '현재 번역 결과에 적용';
+      modalBtn.addEventListener('click', () => {
+        applyReplacementToResult(slot.find, slot.replace);
+      });
+      modalList.appendChild(modalBtn);
+    });
+  }
+
+  function applyReplacementToResult(find, replace) {
+    const target = String(find || '');
+    const replacement = String(replace || '');
+    const resultContent = document.getElementById('trans-result-content');
+    if (!resultContent) return 0;
+
+    if (!target) {
+      showNudge('찾을 말을 입력해주세요.', 'err');
+      return 0;
+    }
+
+    const before = resultContent.value;
+    const count = countOccurrences(before, target);
+    if (count === 0) {
+      showNudge(`"${target}"을 찾지 못했습니다.`, 'err');
+      return 0;
+    }
+
+    resultContent.value = before.split(target).join(replacement);
+    if (transIndex >= 0 && transHistory[transIndex] !== undefined) {
+      transHistory[transIndex] = resultContent.value;
+    }
+
+    showNudge(`${count}곳을 교체했습니다: ${target} → ${replacement}`, 'ok');
+    return count;
+  }
+
+  function countOccurrences(text, needle) {
+    if (!needle) return 0;
+    return text.split(needle).length - 1;
   }
 
   function showNudge(message, type = 'info', persist = false) {
