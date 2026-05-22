@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         크랙 초월 번역기
+// @name         크랙 초월 번역기 
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  최신 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
@@ -44,6 +44,7 @@
   let activeOriginalText = '';
   let activeChatId = '';
   let activeMsgId = '';
+  let activeIsFullMode = true;
   let thinkingLevels = GM_getValue('thinkingLevels', {});
   let thinkingBudgets = GM_getValue('thinkingBudgets', {});
   let replacementSlots = sanitizeReplacementSlots(GM_getValue('replacementSlots', []));
@@ -1110,9 +1111,11 @@
         const currentTranslatedText = resultContent.value;
         transHistory[transIndex] = currentTranslatedText;
 
-        const { content: original } = await fetchLatestBotMessage(activeChatId);
+        const { allMsgs, content: latestOriginal } = await fetchLatestBotMessage(activeChatId);
+        const targetMsg = findMessageById(allMsgs, activeMsgId);
+        const original = targetMsg?.content || latestOriginal;
         let newContent = currentTranslatedText;
-        if (activeOriginalText !== original) {
+        if (!activeIsFullMode && activeOriginalText !== original) {
           if (!original.includes(activeOriginalText)) {
             throw new Error('선택한 원문을 최신 답변에서 찾을 수 없습니다.');
           }
@@ -1538,6 +1541,40 @@
     return res.json();
   }
 
+  function findMessageById(messages, messageId) {
+    if (!messageId) return null;
+    return messages.find(m => String(m._id || m.id || '') === String(messageId)) || null;
+  }
+
+  function normalizeForMessageMatch(text) {
+    return String(text || '')
+      .replace(/```[\s\S]*?```/g, block => block.replace(/```/g, ''))
+      .replace(/[#*_`~>\-[\](){}.!?,:;"']/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+  }
+
+  function resolveTargetBotMessage(messages, fallbackMsgId, visibleText) {
+    const byId = findMessageById(messages, fallbackMsgId);
+    if (byId?.role === 'assistant') return byId;
+
+    const visibleNorm = normalizeForMessageMatch(visibleText);
+    if (visibleNorm) {
+      const byRenderedText = messages.find(m => {
+        if (m.role !== 'assistant' || !m.content) return false;
+        const contentNorm = normalizeForMessageMatch(m.content);
+        return contentNorm.includes(visibleNorm) || visibleNorm.includes(contentNorm);
+      });
+      if (byRenderedText) return byRenderedText;
+    }
+
+    return messages.find(m => m.role === 'assistant') || null;
+  }
+
+  function getMessageContent(message) {
+    return message?.content ?? message?.message ?? message?.text ?? '';
+  }
+
   function injectSidebar() {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
     let node;
@@ -1577,14 +1614,15 @@
     showNudge('번역 중...', 'info', true);
 
     try {
-      activeOriginalText = textToTranslate;
       activeChatId = chatId;
 
       const { allMsgs, id: latestMsgId } = await fetchLatestBotMessage(chatId);
-      const matchedMsg = allMsgs.find(m => m.content && m.content.includes(textToTranslate));
-      activeMsgId = matchedMsg ? (matchedMsg._id || matchedMsg.id) : (fallbackMsgId || latestMsgId);
+      const targetMsg = resolveTargetBotMessage(allMsgs, fallbackMsgId, textToTranslate);
+      activeMsgId = targetMsg ? (targetMsg._id || targetMsg.id) : (fallbackMsgId || latestMsgId);
+      activeOriginalText = getMessageContent(targetMsg) || textToTranslate;
+      activeIsFullMode = true;
 
-      const resultObj = await callGemini(textToTranslate);
+      const resultObj = await callGemini(activeOriginalText);
       transHistory = [resultObj.text];
       transUsageHistory = [{ usage: resultObj.usage, model: resultObj.model }];
       transIndex = 0;
@@ -1605,15 +1643,13 @@
 
     try {
       const { allMsgs, id: latestMsgId, content: latestContent } = await fetchLatestBotMessage(chatId);
-      const matchedMsg = allMsgs.find(m => m.content && m.content.includes(textToTranslate));
-      const targetMsgId = matchedMsg ? (matchedMsg._id || matchedMsg.id) : (fallbackMsgId || latestMsgId);
-      const originalContent = matchedMsg?.content || latestContent;
-      if (!textToTranslate.trim()) throw new Error('번역할 내용이 없습니다.');
+      const targetMsg = resolveTargetBotMessage(allMsgs, fallbackMsgId, textToTranslate);
+      const targetMsgId = targetMsg ? (targetMsg._id || targetMsg.id) : (fallbackMsgId || latestMsgId);
+      const originalContent = getMessageContent(targetMsg) || latestContent || textToTranslate;
+      if (!originalContent.trim()) throw new Error('번역할 내용이 없습니다.');
 
-      const resultObj = await callGemini(textToTranslate);
-      const newContent = originalContent.includes(textToTranslate)
-        ? originalContent.replace(textToTranslate, resultObj.text)
-        : resultObj.text;
+      const resultObj = await callGemini(originalContent);
+      const newContent = resultObj.text;
 
       await patchMessage(chatId, targetMsgId, newContent);
       showNudge(`번역 교체 완료! 새로고침 하세요.${formatCostForMessage(resultObj.usage, resultObj.model)}`, 'ok');
