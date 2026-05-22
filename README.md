@@ -6,6 +6,9 @@ https://github.com/h-ap5/crack-translator/raw/refs/heads/main/crack-translator.u
 
 ## 업데이트 내역
 
+### V3.2
+-번역 후 메시지 특수문자가 사라지는 오류를 제거했습니다.
+
 ### V3.1
 -완료된 번역본에서 키워드 전체 교체 기능을 추가했습니다.
 <img width="680" height="617" alt="image" src="https://github.com/user-attachments/assets/b9cda7f0-d2f6-424b-a474-af5b9671cddd" />
