@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         크랙 초월 번역기
+// @name         ✨ 크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
 // @version      3.3
 // @description  최신 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
