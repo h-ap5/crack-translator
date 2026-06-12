@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         크랙 초월 번역기 
+// @name         크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.3
 // @description  최신 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
@@ -31,12 +31,31 @@
     'gemini-2.5-flash': { input: 0.30, output: 2.50, cacheRead: 0.03, cacheWrite: 0.30 },
   };
 
-  const baseSystemPrompt = `[역할 및 목적]
+  // 1. 한글 전용 기본 프롬프트
+  const promptKo = `[역할 및 목적]
 당신은 최상급 웹소설 작가이자 인공지능 캐릭터 롤플레잉 전담 '초월 번역가'입니다. 제공되는 외국어 텍스트를 단순 기계 번역하는 것을 넘어, 캐릭터의 영혼과 감정, 문체, 그리고 상황적 맥락이 생생하게 호흡하는 완벽한 한국어 웹소설 문체로 재창조하는 것이 당신의 유일한 목표입니다.
+
 [핵심 번역 원칙: 초월 번역]
-완벽한 탈(脫)번역투: 대명사 사용을 극도로 제한하고 호칭으로 대체. 수동태는 능동태로.
-지문과 대사의 극적 분리: 지문은 시각적/은유적으로, 대사는 생동감 있게.
-번역 외의 부연 설명 절대 금지. 원문의 마크다운 형태 유지.`;
+1. 완벽한 탈(脫)번역투: 대명사 사용을 극도로 제한하고 호칭으로 대체. 수동태는 능동태로.
+2. 지문과 대사의 극적 분리: 지문은 시각적/은유적으로, 대사는 생동감 있게.
+- 번역 외의 부연 설명 절대 금지. 원문의 마크다운, 링크, *,\`등 기호 및 기존 구조 형태 반드시 유지.
+3. 형식 오류 수정: 한국어 외 다른 언어가 혼합되었을시, 한국어를 번역하여 모든 텍스트를 아래 형식에 맞추어 자연스럽게 번역한다:
+- 대사 형식: "KR text"
+- 대사 이외의 모든 묘사 및 서술 형식: *KR description or narration* 형식으로 출력하십시오.
+자주 나는 형식 오류 검토: 3-1. ""인 따옴표 안과 ** 안에 한국어 이외의 언어가 들어가진 않았는가? 3-2. 대사가 아닌 지문 묘사에 **가 없는가? -> 없다면 추가. 대사 이외의 모든 text는 **로 감싸야 한다. 3-3. 한국어 번역이 의역이 아닌 부자연스러운 기계식 직역 번역인가? -> 자연스러운 의역·영어권 문화를 고려한 번역으로 정정 3-5. 지문 안 (**안) 내용에 "한국어에서 영어" 또는 "영어에서 한국어" 와 비슷한 내용이 있는가? -> 해당 내용을 삭제 후 자연스러운 지문 묘사가 될 수 있게끔 변경 및 수정.`;
+
+  // 2. 영문 혼용 기본 프롬프트
+  const promptEn = `[역할 및 목적]
+당신은 최상급 웹소설 작가이자 인공지능 캐릭터 롤플레잉 전담 '초월 번역가'입니다. 제공되는 외국어 텍스트를 단순 기계 번역하는 것을 넘어, 캐릭터의 영혼과 감정, 문체, 그리고 상황적 맥락이 생생하게 호흡하는 완벽한 한국어 웹소설 문체로 재창조하는 것이 당신의 유일한 목표입니다.
+
+[핵심 번역 원칙: 초월 번역]
+1. 완벽한 탈(脫)번역투: 대명사 사용을 극도로 제한하고 호칭으로 대체. 수동태는 능동태로.
+2. 지문과 대사의 극적 분리: 지문은 시각적/은유적으로, 대사는 생동감 있게.
+- 번역 외의 부연 설명 절대 금지. 원문의 마크다운, 링크, *,\`등 기호 및 기존 구조 형태 반드시 유지.
+3. 대사 형식 오류 수정: 영어와 한국어가 혼합되거나 한국어 대사만 나왔을 시, 한국어를 번역하여 모든 대사를 아래 형식에 맞추어 자연스럽게 번역한다:
+"English text" (KR translation only)
+자주 나는 형식 오류 검토: 3-1. ()인 괄호 안에 한국어 이외의 언어가 들어가진 않았는가? 3-2. ()인 괄호 안 대사 옆에 "와 같은 특수기호가 들어가있는가? -> 있다면 제거 3-3. "" 안 영어대사에 한국어가 섞이지 않았는가? 3-4. 한국어 번역의 의역이 아닌 부자연스러운 기계식 직역 번역인가? -> 자연스러운 의역·영어권 문화를 고려한 번역으로 정정 3-5. 지문 안 (**안) 내용에 "한국어에서 영어" 또는 "영어에서 한국어" 와 비슷한 내용이 있는가? -> 해당 내용을 삭제 후 자연스러운 지문 묘사가 될 수 있게끔 변경 및 수정.
+- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.`;
 
   let transHistory = [];
   let transUsageHistory = [];
@@ -164,7 +183,7 @@
   display: none;
   width: 370px;
   max-width: calc(100vw - 28px);
-  max-height: 88vh;
+  max-height: 75vh;
   overflow-y: auto;
   background: var(--t-bg);
   border: 1px solid var(--t-border);
@@ -798,6 +817,7 @@
         <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
         <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview</option>
         <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+        <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
         <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
       </select>
@@ -842,7 +862,7 @@
     <button class="t-btn t-btn-primary" id="trans-save-btn" type="button">저장</button>
   </div>
 
-  <button id="trans-direct-apply-btn" type="button">✨ 최신 답변 바로 번역 (팝업 없이)</button>
+  <button id="trans-direct-apply-btn" type="button" style="display: none;">✨ 최신 답변 바로 번역 (팝업 없이)</button>
   <div id="trans-status-box"></div>
 </div>`;
     document.body.appendChild(panel);
@@ -861,6 +881,7 @@
       <option value="gemini-3.1-pro-preview">3.1 Pro</option>
       <option value="gemini-3.1-flash-lite-preview">3.1 Flash Lite</option>
       <option value="gemini-3-flash-preview">3 Flash</option>
+      <option value="gemini-3.5-flash">3.5 Flash</option>
       <option value="gemini-2.5-pro">2.5 Pro</option>
       <option value="gemini-2.5-flash">2.5 Flash</option>
     </select>
@@ -934,10 +955,27 @@
     apiKeyInput.value = GM_getValue('apiKey', '');
     firebaseScriptInput.value = GM_getValue('firebaseScript', '');
     modelSelect.value = GM_getValue('apiModel', 'gemini-2.5-pro');
-    modeSelect.value = GM_getValue('transMode', 'ko');
-    customPromptInput.value = GM_getValue('customPrompt', baseSystemPrompt);
     instantApplyInput.checked = GM_getValue('instantApply', false);
     modalModelSelect.value = modelSelect.value;
+
+    let savedMode = GM_getValue('transMode', 'ko');
+    modeSelect.value = savedMode;
+
+    // 듀얼 프롬프트 저장소 로드
+    let currentPrompts = {
+      ko: GM_getValue('customPromptKo', promptKo),
+      en: GM_getValue('customPromptEn', promptEn)
+    };
+
+    // 이전 버전(단일 저장소)을 사용하던 유저가 있을 경우 안전하게 마이그레이션
+    const legacyPrompt = GM_getValue('customPrompt', '');
+    if (legacyPrompt) {
+      currentPrompts[savedMode] = legacyPrompt;
+      GM_setValue('customPrompt', ''); // 마이그레이션 후 레거시 삭제
+    }
+
+    // 초기 화면에 현재 모드의 텍스트 뿌리기
+    customPromptInput.value = currentPrompts[savedMode];
 
     const toggleProviderUI = () => {
       const isFirebase = apiProviderSelect.value === 'firebase';
@@ -996,12 +1034,17 @@
 
     const saveCurrentSettings = () => {
       saveThinkVal(thinkContainer.getAttribute('data-current-model'));
+
+      // 저장 시 현재 모드의 텍스트 에디터 내용을 듀얼 저장소에 업데이트
+      currentPrompts[modeSelect.value] = customPromptInput.value;
+
       GM_setValue('apiProvider', apiProviderSelect.value);
       GM_setValue('apiKey', apiKeyInput.value.trim());
       GM_setValue('firebaseScript', firebaseScriptInput.value.trim());
       GM_setValue('apiModel', modelSelect.value);
       GM_setValue('transMode', modeSelect.value);
-      GM_setValue('customPrompt', customPromptInput.value);
+      GM_setValue('customPromptKo', currentPrompts.ko); // 한글 프롬프트 저장
+      GM_setValue('customPromptEn', currentPrompts.en); // 영문 프롬프트 저장
       GM_setValue('instantApply', instantApplyInput.checked);
       GM_setValue('thinkingLevels', thinkingLevels);
       GM_setValue('thinkingBudgets', thinkingBudgets);
@@ -1009,10 +1052,22 @@
     };
 
     apiProviderSelect.addEventListener('change', toggleProviderUI);
+
     modelSelect.addEventListener('change', () => {
       saveThinkVal(thinkContainer.getAttribute('data-current-model'));
       updateThinkingUI();
     });
+
+    // 드롭다운 변경 시 스와핑 로직 (작성 중이던 텍스트 자동 임시보존 적용)
+    modeSelect.addEventListener('change', (e) => {
+      // 1. 방금 전까지 보고 있던 모드에 현재 작성된 글자들을 임시보존
+      const prevMode = e.target.value === 'en' ? 'ko' : 'en';
+      currentPrompts[prevMode] = customPromptInput.value;
+
+      // 2. 바뀐 모드의 지침서 텍스트를 불러와서 뿌림
+      customPromptInput.value = currentPrompts[e.target.value];
+    });
+
     instantApplyInput.addEventListener('change', saveCurrentSettings);
 
     addSlotBtn.addEventListener('click', () => {
@@ -1052,8 +1107,11 @@
     });
 
     resetBtn.addEventListener('click', () => {
-      if (confirm('지침서를 기본값으로 초기화할까요?')) {
-        customPromptInput.value = baseSystemPrompt;
+      if (confirm('지침서를 현재 선택된 방식의 기본값으로 초기화할까요?')) {
+        const currentMode = modeSelect.value;
+        const defaultPrompt = currentMode === 'en' ? promptEn : promptKo;
+        customPromptInput.value = defaultPrompt;
+        currentPrompts[currentMode] = defaultPrompt;
       }
     });
 
@@ -1138,38 +1196,40 @@
       }
     });
 
-    directApplyBtn.addEventListener('click', async () => {
-      const chatId = parsePath();
-      if (!chatId) {
-        alert('채팅방에서만 사용 가능합니다.');
-        return;
-      }
+    if (directApplyBtn) {
+      directApplyBtn.addEventListener('click', async () => {
+        const chatId = parsePath();
+        if (!chatId) {
+          alert('채팅방에서만 사용 가능합니다.');
+          return;
+        }
 
-      saveCurrentSettings();
-      directApplyBtn.disabled = true;
-      statusBox.className = 'info active';
-      statusBox.textContent = '메시지 탐색 및 번역 중...';
-      showNudge('최신 답변 번역 중...', 'info', true);
+        saveCurrentSettings();
+        directApplyBtn.disabled = true;
+        statusBox.className = 'info active';
+        statusBox.textContent = '메시지 탐색 및 번역 중...';
+        showNudge('최신 답변 번역 중...', 'info', true);
 
-      try {
-        const { id: msgId, content: original } = await fetchLatestBotMessage(chatId);
-        if (!original.trim()) throw new Error('번역할 내용이 없습니다.');
+        try {
+          const { id: msgId, content: original } = await fetchLatestBotMessage(chatId);
+          if (!original.trim()) throw new Error('번역할 내용이 없습니다.');
 
-        const resultObj = await callGemini(original);
-        await patchMessage(chatId, msgId, resultObj.text);
+          const resultObj = await callGemini(original);
+          await patchMessage(chatId, msgId, resultObj.text);
 
-        const costMsg = formatCostForMessage(resultObj.usage, resultObj.model);
-        statusBox.className = 'ok active';
-        statusBox.textContent = '번역 교체 완료! 새로고침 하세요.' + costMsg;
-        showNudge('번역 교체 완료! 새로고침 하세요.' + costMsg, 'ok');
-      } catch (e) {
-        statusBox.className = 'err active';
-        statusBox.textContent = e.message;
-        showNudge(e.message, 'err');
-      } finally {
-        directApplyBtn.disabled = false;
-      }
-    });
+          const costMsg = formatCostForMessage(resultObj.usage, resultObj.model);
+          statusBox.className = 'ok active';
+          statusBox.textContent = '번역 교체 완료! 새로고침 하세요.' + costMsg;
+          showNudge('번역 교체 완료! 새로고침 하세요.' + costMsg, 'ok');
+        } catch (e) {
+          statusBox.className = 'err active';
+          statusBox.textContent = e.message;
+          showNudge(e.message, 'err');
+        } finally {
+          directApplyBtn.disabled = false;
+        }
+      });
+    }
 
     toggleProviderUI();
     updateThinkingUI();
@@ -1354,11 +1414,7 @@
   }
 
   function getPrompt() {
-    let finalPrompt = document.getElementById('trans-custom-prompt').value;
-    if (document.getElementById('trans-mode-select').value === 'en') {
-      finalPrompt += '\n- 대사 형식: 영어 대사는 "영어"(한국어) 형식으로 출력하십시오.';
-    }
-    return finalPrompt;
+    return document.getElementById('trans-custom-prompt').value;
   }
 
   function callGemini(text, overrideModel = null) {
