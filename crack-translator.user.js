@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ✨ 크랙 초월 번역기
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  최신 메시지를 자동 감지·번역·수정 삽입. 설정 패널에서 팝업 미리보기 및 모델 리롤 지원
+// @version      3.4
+// @description  최신 메시지를 자동 감지·번역·수정 삽입. 이미지 링크 마스킹 보호 기능 추가.
 // @match        https://crack.wrtn.ai/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -780,7 +780,8 @@
   .t-inline-form {
     grid-template-columns: 1fr;
   }
-}`;
+}
+`;
     document.head.appendChild(style);
   }
 
@@ -961,20 +962,17 @@
     let savedMode = GM_getValue('transMode', 'ko');
     modeSelect.value = savedMode;
 
-    // 듀얼 프롬프트 저장소 로드
     let currentPrompts = {
       ko: GM_getValue('customPromptKo', promptKo),
       en: GM_getValue('customPromptEn', promptEn)
     };
 
-    // 이전 버전(단일 저장소)을 사용하던 유저가 있을 경우 안전하게 마이그레이션
     const legacyPrompt = GM_getValue('customPrompt', '');
     if (legacyPrompt) {
       currentPrompts[savedMode] = legacyPrompt;
-      GM_setValue('customPrompt', ''); // 마이그레이션 후 레거시 삭제
+      GM_setValue('customPrompt', '');
     }
 
-    // 초기 화면에 현재 모드의 텍스트 뿌리기
     customPromptInput.value = currentPrompts[savedMode];
 
     const toggleProviderUI = () => {
@@ -1035,7 +1033,6 @@
     const saveCurrentSettings = () => {
       saveThinkVal(thinkContainer.getAttribute('data-current-model'));
 
-      // 저장 시 현재 모드의 텍스트 에디터 내용을 듀얼 저장소에 업데이트
       currentPrompts[modeSelect.value] = customPromptInput.value;
 
       GM_setValue('apiProvider', apiProviderSelect.value);
@@ -1043,8 +1040,8 @@
       GM_setValue('firebaseScript', firebaseScriptInput.value.trim());
       GM_setValue('apiModel', modelSelect.value);
       GM_setValue('transMode', modeSelect.value);
-      GM_setValue('customPromptKo', currentPrompts.ko); // 한글 프롬프트 저장
-      GM_setValue('customPromptEn', currentPrompts.en); // 영문 프롬프트 저장
+      GM_setValue('customPromptKo', currentPrompts.ko);
+      GM_setValue('customPromptEn', currentPrompts.en);
       GM_setValue('instantApply', instantApplyInput.checked);
       GM_setValue('thinkingLevels', thinkingLevels);
       GM_setValue('thinkingBudgets', thinkingBudgets);
@@ -1058,13 +1055,9 @@
       updateThinkingUI();
     });
 
-    // 드롭다운 변경 시 스와핑 로직 (작성 중이던 텍스트 자동 임시보존 적용)
     modeSelect.addEventListener('change', (e) => {
-      // 1. 방금 전까지 보고 있던 모드에 현재 작성된 글자들을 임시보존
       const prevMode = e.target.value === 'en' ? 'ko' : 'en';
       currentPrompts[prevMode] = customPromptInput.value;
-
-      // 2. 바뀐 모드의 지침서 텍스트를 불러와서 뿌림
       customPromptInput.value = currentPrompts[e.target.value];
     });
 
@@ -1422,12 +1415,22 @@
       const provider = document.getElementById('trans-api-provider').value;
       const modelId = overrideModel || document.getElementById('trans-model-select').value;
       const finalPrompt = getPrompt();
-      const maskedText = maskCodeBlocks(text);
       const generationConfig = buildGenerationConfig(modelId);
+
+      // 1. 이미지 링크만 안전하게 추출하여 배열에 임시 보관
+      let tempImages = [];
+      let safeText = text.replace(/!\[.*?\]\([^)]+\)/g, (match) => {
+        tempImages.push(match);
+        return `===IMG_${tempImages.length - 1}===`; // LLM이 번역하지 못하도록 플레이스홀더로 치환
+      });
+
+      // 2. 기존 코드 블록 마스킹 적용
+      const maskedText = maskCodeBlocks(safeText);
 
       if (provider === 'firebase') {
         try {
-          const result = await callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig);
+          // 수정: 파이어베이스 함수로 tempImages 변수를 함께 넘겨줌
+          const result = await callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig, tempImages);
           resolve(result);
         } catch (e) {
           reject(e);
@@ -1460,7 +1463,15 @@
 
             const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
             const usage = data.usageMetadata || {};
-            const restored = unmaskCodeBlocks(stripOuterFence(raw));
+            let restored = unmaskCodeBlocks(stripOuterFence(raw));
+
+            // 3. 임시 보관했던 이미지 링크를 원래 자리에 복구
+            if (tempImages && tempImages.length > 0) {
+              tempImages.forEach((img, index) => {
+                restored = restored.replace(`===IMG_${index}===`, img);
+              });
+            }
+
             resolve({ text: restored, usage, model: modelId });
           } catch (e) {
             reject(e);
@@ -1473,7 +1484,8 @@
     });
   }
 
-  async function callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig) {
+  // 수정: tempImages 매개변수 추가 (기본값 설정)
+  async function callFirebaseGemini(maskedText, modelId, finalPrompt, generationConfig, tempImages = []) {
     const configRaw = document.getElementById('trans-firebase-script').value.trim();
     if (!configRaw) {
       throw new Error('설정창에서 Firebase 복사본을 먼저 입력해주세요.');
@@ -1527,12 +1539,21 @@
       const result = await generativeModel.generateContent(maskedText);
       const rawResult = result.response.text();
       const usage = result.response.usageMetadata || {};
-      const restored = unmaskCodeBlocks(stripOuterFence(rawResult));
+      let restored = unmaskCodeBlocks(stripOuterFence(rawResult));
+
+      // 추가: Firebase 쪽에도 이미지 언마스킹 적용
+      if (tempImages && tempImages.length > 0) {
+        tempImages.forEach((img, index) => {
+          restored = restored.replace(`===IMG_${index}===`, img);
+        });
+      }
+
       return { text: restored, usage, model: modelId };
     } catch (e) {
+      // 누락되었던 catch 구문 복구!
       throw new Error(`Firebase Vertex 통신 실패: ${e.message}`);
     }
-  }
+  } // 누락되었던 함수 닫기 괄호 복구!
 
   function parseFirebaseConfig(configRaw) {
     let fbVersion = '12.12.0';
