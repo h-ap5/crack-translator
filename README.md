@@ -6,6 +6,9 @@ https://github.com/h-ap5/crack-translator/raw/refs/heads/main/crack-translator.u
 
 ## 업데이트 내역
 
+### V3.4
+- 번역 이후 이미지 링크를 확실하게 넣게끔 수정
+
 ### V3.3
 - `Gemini 3.5 Flash`를 설정/리롤 모델 드롭다운에 추가
 - `프롬프트 프리셋` 드롭다운 추가, 선택 시 번역 지침서 변경이 안 되던 버그 픽스
